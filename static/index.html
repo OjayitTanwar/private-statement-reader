@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Private Statement Reader</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/evidence.js" defer></script>
+  <script src="/ui.js" defer></script>
+</head>
+<body>
+<!--
+THESIS: A native Mac document utility for automatic bank statement extraction.
+OWN-WORLD: System SF typography, neutral surfaces, blue selection, actual AppKit toolbar and file controls.
+STORY: Import PDFs, follow automatic processing, see source evidence above uncertain values, open saved spreadsheets.
+FIRST VIEWPORT: A 230px document sidebar beside an independently scrolling workspace, below the native toolbar; full-width source images precede field labels.
+FORM: User-pinned native macOS utility; seed fee309c9. Platform fidelity overrides the seeded visual assignment.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+<header>
+  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5zM14 3v5h5M8 12h8M8 16h5"/></svg>
+  <h1>Private Statement Reader</h1>
+  <span class="grow"></span>
+  <span class="private">On this Mac</span>
+  <button id="finishedFiles">Open finished files</button>
+  <button id="peopleButton">People list</button>
+  <button class="primary" id="importButton">Import statements</button>
+  <input class="hidden" id="file" type="file" accept="application/pdf" multiple>
+</header>
+<div class="app">
+  <aside aria-label="Statement library">
+    <h2>Statements</h2>
+    <p id="batchStatus" class="sidebar-note" role="status" aria-live="polite"></p>
+    <nav id="documents" aria-label="Statements"></nav>
+    <p class="sidebar-note">Import PDFs together. Extraction, balance checks, and spreadsheet saving run automatically.</p>
+    <div id="engineStatus" class="sidebar-note"></div>
+  </aside>
+  <main class="workspace">
+    <div id="alert" role="alert"></div>
+    <section id="content"></section>
+  </main>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="330" viewBox="0 0 1400 330" role="img" aria-labelledby="t d">
+<title id="t">A local extraction pipeline with visible uncertainty</title><desc id="d">Import PDFs, compare OCR readings, check running balances, then save spreadsheets and a searchable PDF. The original and uncertainty evidence remain on your Mac.</desc>
+<rect width="1400" height="330" rx="18" fill="#f3f5f4"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
+<text x="40" y="48" fill="#29483a" font-size="17" letter-spacing="2">FROM SCAN TO SPREADSHEET — ON YOUR MAC</text>
+<g fill="#fff" stroke="#d4ded8"><rect x="40" y="85" width="290" height="155" rx="12"/><rect x="382" y="85" width="290" height="155" rx="12"/><rect x="724" y="85" width="290" height="155" rx="12"/><rect x="1066" y="85" width="294" height="155" rx="12"/></g>
+<g fill="#0066d9" font-size="17"><text x="62" y="119">01 / IMPORT</text><text x="404" y="119">02 / READ</text><text x="746" y="119">03 / CHECK</text><text x="1088" y="119">04 / SAVE</text></g>
+<g fill="#1d3027" font-size="24" font-weight="600"><text x="62" y="160">Scanned PDFs</text><text x="404" y="160">OCR + local AI</text><text x="746" y="160">Running balance</text><text x="1088" y="160">CSV / XLSX / PDF</text></g>
+<g fill="#53665b" font-size="17"><text x="62" y="199">Originals stay unchanged.</text><text x="404" y="199">Compare candidate readings.</text><text x="746" y="199">Keep differences visible.</text><text x="1088" y="199">Files save automatically.</text></g>
+<g fill="none" stroke="#6b917a" stroke-width="2"><path d="M341 161h28m-7-6 7 6-7 6M683 161h28m-7-6 7 6-7 6M1025 161h28m-7-6 7 6-7 6"/></g>
+<text x="40" y="288" fill="#53665b" font-size="18">Source images, original readings and labeled estimates remain available at every stage.</text>
+</g></svg>
