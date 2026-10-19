@@ -1,6 +1,6 @@
 ---
 name: Private Statement Reader
-description: A native Mac document utility with source evidence above uncertain readings.
+description: A native Mac document utility with source evidence above financial checks.
 colors:
   ink: "#1d1d1f"
   muted: "#5b5b61"
@@ -182,7 +182,7 @@ The native window starts at a working size (1380 × 900px), has a minimum size (
 
 The library is a fixed sidebar (230px). The workspace consumes the remaining width with padding (20px 24px 28px). Both regions scroll independently while the page body stays fixed to the window. Toggling the sidebar gives its space to the workspace. The standalone browser header is compact (52px); native content uses the full available webview height.
 
-Source cards occupy a single full-width column. Their source viewport has a vertical cap (320px) and local scrolling. Images have a minimum display width (680px), allowing horizontal inspection instead of shrinking tiny statement text. Property fields use three columns, with descriptions spanning the full row. Six uncertain rows appear per page.
+Source cards occupy a single full-width column. Their source viewport has a vertical cap (320px) and local scrolling. Images have a minimum display width (680px), allowing horizontal inspection instead of shrinking tiny statement text. Property fields use three columns, with descriptions spanning the full row. Six financial checks appear per page.
 
 At narrower widths (1100px), the optional table and inspector stack, and workspace padding tightens. At 850px, properties use two columns and title controls wrap. The 600px browser fallback uses a narrower sidebar (180px) and one property column; this is below the native window minimum.
 
@@ -212,7 +212,7 @@ Web buttons and fields have a compact minimum height (26px). Primary buttons use
 
 ### Source Evidence
 
-The screenshot is the first region of every uncertainty card. A caption identifies whether it is a row crop, source table or full page. The issue heading and messages precede the flat values grid. Missing, estimated, conflicting and AI statuses stay visible in amber, with earlier readings where available. Repeated ordinary read-status detail is suppressed; the row still states that arithmetic does not independently verify the printed source.
+The screenshot is the first region of every financial check card. A caption identifies whether it is a row crop, source table or full page. The issue heading and messages precede the flat values grid. Missing, estimated and conflicting financial values or dates stay visible in amber, with earlier readings where available. The default Financial checks list contains financial errors and estimated financial values or dates. Information notes for name guesses, AI narration, weak aggregate confidence and a missing match from another OCR pass remain available in a separate collapsed section and a filter when there is no concrete numeric conflict. No warnings are removed or transaction values changed by this grouping; arithmetic does not independently verify the printed source.
 
 The source failure state provides an original-PDF link and page reference. Pending documents show provisional checks without correction controls. Finished documents offer optional row inspection. Manual confirmation does not conceal arithmetic or inference warnings.
 

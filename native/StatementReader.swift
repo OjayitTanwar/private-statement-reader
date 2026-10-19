@@ -228,7 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     }
 
     @objc func about() {
-        let a=NSAlert(); a.messageText="Statement Reader"; a.informativeText="Automatic bank statement extraction and reconciliation.\nSpreadsheets save automatically; interrupted work resumes on launch.\nVersion 0.5 — estimated readings are labeled."; a.runModal()
+        let a=NSAlert(); a.messageText="Statement Reader"; a.informativeText="Automatic bank statement extraction and reconciliation.\nSpreadsheets save automatically; interrupted work resumes on launch.\nVersion 0.5.1 — estimated readings are labeled."; a.runModal()
     }
     @objc func showData() { NSWorkspace.shared.open(dataURL) }
     @objc func showFinishedFiles() {

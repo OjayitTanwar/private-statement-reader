@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-19T17:37:34Z",
+  "generatedAt": "2026-10-19T18:03:02Z",
   "title": "Design System: Private Statement Reader",
   "extensions": {
     "colorMeta": {
@@ -584,7 +584,7 @@
       },
       "section": {
         "displayName": "Section Heading",
-        "purpose": "Uncertainty section heading."
+        "purpose": "Financial checks section heading."
       },
       "body": {
         "displayName": "System Body",
@@ -659,16 +659,16 @@
       "name": "Unresolved Check Tag",
       "kind": "chip",
       "refersTo": "warning-tag",
-      "description": "Text and amber together identify unresolved source evidence.",
-      "html": "<span class=\"ds-warning\">Unresolved checks</span>",
+      "description": "Text and amber together identify financial errors or estimated financial values and dates. Information-only notes remain separately accessible.",
+      "html": "<span class=\"ds-warning\">Financial checks</span>",
       "css": ".ds-warning{display:inline-block;padding:2px 5px;border-radius:3px;background:var(--warning-surface,#fff1ce);color:var(--warning,#805000);font:10px -apple-system,BlinkMacSystemFont,sans-serif}"
     },
     {
       "name": "Source Evidence Container",
       "kind": "card",
       "refersTo": "evidence-card",
-      "description": "Source imagery occupies the first region, above the extracted values. The snippet labels its image slot instead of embedding private evidence.",
-      "html": "<article class=\"ds-evidence\"><figure><div class=\"ds-source-slot\">Source image slot</div><figcaption>Source crop · page reference</figcaption></figure><section><h3>Unresolved reading</h3><p>Extracted values appear beneath their source.</p></section></article>",
+      "description": "Source imagery occupies the first region above extracted financial values. Financial checks contain concrete financial errors and estimated values or dates. Names, AI narration and other information notes remain available separately, without removing warnings or changing transaction values. The snippet labels its image slot instead of embedding private evidence.",
+      "html": "<article class=\"ds-evidence\"><figure><div class=\"ds-source-slot\">Source image slot</div><figcaption>Source crop · page reference</figcaption></figure><section><h3>Financial check</h3><p>Extracted values appear beneath their source.</p></section></article>",
       "css": ".ds-evidence{max-width:900px;border:1px solid var(--line,#d4d4d8);border-radius:7px;overflow:hidden;background:var(--surface,#fff);color:var(--ink,#1d1d1f);font:13px -apple-system,BlinkMacSystemFont,sans-serif}.ds-evidence figure{margin:0;padding:12px;background:var(--subtle,#f1f1f3);border-bottom:1px solid var(--line,#d4d4d8)}.ds-source-slot{padding:30px 12px;background:#fff;color:#5b5b61}.ds-evidence figcaption{margin-top:8px;color:var(--muted,#5b5b61);font-size:11px}.ds-evidence section{padding:16px}.ds-evidence h3{margin:0 0 10px;font-size:14px;font-weight:600}.ds-evidence p{font-size:12px;color:var(--muted,#5b5b61)}"
     },
     {

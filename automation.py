@@ -1,8 +1,10 @@
 """Durable automatic processing and local deliverables, independent of the UI."""
 from pathlib import Path
 import csv,io,json,os,re
+from review_checks import classify_review
 
 FIELDS=['date','original_description','normalized_description','counterparty','cheque_number','debit','credit','balance','page','confidence','suspicious','reason','state','inference_status','original_ocr_values','ai_proposal','inferred_fields']
+FIELDS+=['review_category','review_required','review_reason','information_notes','legacy_suspicious']
 
 
 def atomic_json(path,value):
@@ -23,6 +25,11 @@ def prepared_rows(rows):
     for original in rows:
         if original.get('state')=='deleted':continue
         r=dict(original)
+        review=classify_review(original)
+        r.update(review_category=review['category'],review_required=review['review_required'],
+                 review_reason='; '.join(review['financial_reasons']+['Estimated '+key for key in review['estimated_fields']]),
+                 information_notes='; '.join(review['information']),legacy_suspicious=bool(original.get('suspicious')),
+                 suspicious=review['review_required'])
         r['inference_status']='AI assisted' if r.get('_ai_proposal') else 'OCR only'
         if r.get('_inferred_fields'):r['inference_status']='Contains inferred values'
         for field,key in [('original_ocr_values','_ocr_before_ai'),('ai_proposal','_ai_proposal'),('inferred_fields','_inferred_fields')]:

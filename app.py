@@ -151,10 +151,15 @@ def recalc(doc):
 
 
 def automatic_report(rows):
+    from review_checks import classify_review
     active=[r for r in rows if r.get('state')!='deleted']
-    return {'rows':len(active),'flagged_rows':sum(bool(r.get('suspicious')) for r in active),
+    reviews=[classify_review(r) for r in active]
+    return {'rows':len(active),'flagged_rows':sum(r['review_required'] for r in reviews),
+            'financial_error_rows':sum(r['category']=='financial_error' for r in reviews),
+            'estimated_value_rows':sum(r['category']=='estimated_value' for r in reviews),
+            'information_only_rows':sum(r['category']=='information' for r in reviews),
             'balance_mismatches':sum('balance mismatch' in r.get('reason','') for r in active),
-            'inferred_rows':sum(bool(r.get('_inferred_fields')) for r in active),
+            'inferred_rows':sum(bool(r['estimated_fields']) for r in reviews),
             'ai_assisted_rows':sum(bool(r.get('_ai_proposal')) for r in active)}
 
 

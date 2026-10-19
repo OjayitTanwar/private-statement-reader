@@ -15,7 +15,7 @@
 **A free, local bank-statement reader for Apple Silicon Macs.**
 
 Convert scanned Indian bank statements into CSV, Excel and searchable PDF files.
-Compare each uncertain reading with its source image.
+Compare financial checks with their source images.
 Check transaction amounts against the running balance.
 
 No subscription. No API key. No cloud OCR service.
@@ -28,7 +28,7 @@ No subscription. No API key. No cloud OCR service.
 
 - **Bank-specific extraction.** Read dates, descriptions, cheque numbers, debits, credits and balances.
 - **Original text and normalized text.** Keep both versions of the description.
-- **Source-first review.** See the source crop above each uncertain reading. Open the full-resolution page beside the review tools.
+- **Source-first review.** See the source crop above each financial check. Open the full-resolution page beside the review tools.
 - **Automatic balance checks.** Find missing values, conflicting readings and balance differences.
 - **Local AI support.** Use GLM-OCR through MLX for additional readings and labeled estimates.
 - **Automatic exports.** Save each statement and a combined CSV/XLSX file without row approvals.
@@ -174,6 +174,15 @@ Each row includes the date, both descriptions, cheque number, debit, credit, bal
 Exports also preserve source identifiers, check results and estimate information.
 CSV and XLSX text fields have spreadsheet formula protection.
 
+The default **Financial checks** list contains concrete financial errors and estimated financial values or dates.
+Name guesses, AI narration changes, weak aggregate OCR confidence and a missed row in another OCR pass appear in separate information notes unless a concrete numeric conflict exists.
+The notes remain available in a collapsed section and a filter.
+Source images stay above the extracted fields. This grouping changes no transaction values and removes no warnings.
+
+CSV and XLSX include `review_category`, `review_required`, `review_reason`, `information_notes` and `legacy_suspicious`.
+The `suspicious` column now follows `review_required`; `legacy_suspicious` preserves the earlier flag.
+The original `reason` remains available.
+
 Use **⌘F** to search descriptions, references and names.
 Use **⌥⌘S** to show or hide the sidebar.
 Use **View → Appearance** to select the system, light or dark appearance.
@@ -228,6 +237,7 @@ Run the unit tests:
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_evidence.cjs
+node tests/test_triage_ui.cjs
 ```
 
 Run the end-to-end OCR test on a Mac with the OCR tools installed:
@@ -262,6 +272,7 @@ bank_engine.py    OCR layout, dates, amounts and balance checks
 table_grid.py     Image-based table detection and candidate selection
 local_ai.py       Local model pool, cache and labeled estimates
 automation.py     Checkpoints and automatic exports
+review_checks.py  Financial checks and information-note classification
 people.py         Conservative name suggestions
 tests/            Synthetic fixtures and source tests
 ```
