@@ -143,7 +143,9 @@ class DurableWorkflowTests(unittest.TestCase):
         def invoke(identifier):
             try:app.run_job(identifier)
             except BaseException as error:errors.append(error)
-        with patch.object(app,'process',side_effect=fake_process):
+        # Exercise two admitted jobs independently of the CI host's core count,
+        # RAM and transient macOS pressure. Resource admission has separate tests.
+        with patch.object(app,'process',side_effect=fake_process),patch.object(app,'capacity_limit',return_value=2):
             threads=[threading.Thread(target=invoke,args=(identifier,)) for identifier in ('parallel1','parallel2')]
             for thread in threads:thread.start()
             for thread in threads:thread.join(timeout=8)
