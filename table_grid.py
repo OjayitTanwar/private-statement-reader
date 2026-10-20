@@ -278,44 +278,95 @@ def extract_grid(image_path,words,folder,page,vision):
         return rows,opening,{'grid':True,'grid_rows':len(grid['rows']),'extracted':len(rows),'angle':round(grid['angle'],2),'fields':list(grid['fields'])}
 
 
-def decode_balance_chain(rows,opening=None,beam_width=48):
-    """Beam search over *observed* cell candidates; no fabricated digits or forced correction."""
-    import itertools
-    dates=[r['date'] for r in rows if r.get('date')];descending=len(dates)>1 and dates[0]>dates[-1]
-    ordered=list(reversed(rows)) if descending else rows
-    beam=[(0,cents(opening),[])]
-    for r in ordered:
-        candidates=r.get('_numeric_candidates',{})
-        options=[]
-        for key in ('debit','credit','balance'):
-            opts=candidates.get(key,[])
-            if not opts:opts=[{'value':r.get(key),'confidence':r.get('confidence',0),'engine':'no reading'}]
-            options.append(opts[:3])
-        variants=list(itertools.product(*options));next_beam=[]
-        if len(variants)>27:variants=variants[:27]
-        for score,previous,path in beam:
-            if r.get('_opening_balance') is not None:previous=cents(r['_opening_balance'])
-            for debit,credit,balance in variants:
-                d,c,b=cents(debit['value']) or 0,cents(credit['value']) or 0,cents(balance['value'])
-                quality=sum(v['confidence'] for v in (debit,credit,balance))*.25
-                agrees=previous is not None and b is not None and previous-d+c==b
-                penalty=0 if agrees else 7 if previous is not None and b is not None else 2
-                if d and c:penalty+=8
-                if not d and not c:penalty+=3
-                next_beam.append((score+quality-penalty,b,path+[(debit,credit,balance,agrees)]))
-        next_beam.sort(key=lambda item:item[0],reverse=True)
-        # Keep alternate balances alive: the next row can disambiguate this one.
-        unique={}
-        for item in next_beam:
-            signature=(item[1],tuple((v['value'] for v in item[2][-1][:3])))
-            if signature not in unique:unique[signature]=item
-            if len(unique)>=beam_width:break
-        beam=list(unique.values())
-    if not beam:return rows
-    best=max(beam,key=lambda item:item[0])
-    for r,choice in zip(ordered,best[2]):
-        for key,candidate in zip(('debit','credit','balance'),choice[:3]):
-            if cents(r.get(key))!=cents(candidate['value']):r['_issues'].append(f'{key}: observed alternate selected by whole-statement balance chain')
-            r[key]=candidate['value']
-        r['_chain_verified']=choice[3]
+def decode_balance_chain(rows,opening=None,beam_width=48,order='auto'):
+    """Select a unique exact path of observed readings; ambiguity leaves values intact."""
+    keys=('debit','credit','balance')
+    def is_ai(item):
+        return item.get('source') in ('ai','ai_only','inferred') or bool(re.search(r'\b(ai|glm|mlx)\b',str(item.get('engine',item.get('_engine',''))),re.I))
+    def signature(item):return tuple(cents(item.get(key)) or 0 if key!='balance' else cents(item.get(key)) for key in keys)
+    def observed(row):
+        if is_ai(row) or any(k in row.get('_inferred_fields',{}) for k in keys):return False
+        before=row.get('_ocr_before_ai',{})
+        return not any(k in before and row.get('_field_sources',{}).get(k)!='ocr' and (cents(before[k]) or 0)!=(cents(row.get(k)) or 0) for k in keys)
+    def frozen(row):
+        return row.get('state') in ('approved','corrected') or row.get('_engine')=='Manual transcription' or any(row.get(k) for k in ('_manual','_edited','_corrected','_manual_fields','_edited_fields'))
+    def variants(row):
+        base={k:row.get(k) for k in keys};result={}
+        def add(values,evidence):
+            if not all(k in values for k in keys):return
+            if any(values.get(k) is not None and str(values[k]).strip() and cents(values[k]) is None for k in keys):return
+            d,c,b=signature(values)
+            if b is None or d<0 or c<0 or bool(d)==bool(c):return
+            result.setdefault((d,c,b),(values,evidence))
+        if observed(row):add(base,{'engine':row.get('_numeric_engine',row.get('_engine','Observed OCR')),'baseline':True})
+        if frozen(row) or is_ai(row) or any(k in row.get('_inferred_fields',{}) for k in keys):return list(result.values())
+        before=row.get('_ocr_before_ai',{})
+        if all(k in before for k in keys) and not any(k in row.get('_inferred_fields',{}) for k in keys):
+            add({k:before[k] for k in keys},{'engine':'Original OCR before AI'})
+        for alternative in row.get('_alternatives',[]):
+            if not is_ai(alternative):add(alternative,alternative)
+        # One cell may change against the observed baseline. Separate engines are
+        # never combined into an invented whole-row reading.
+        if observed(row):
+            for key in keys:
+                for candidate in row.get('_numeric_candidates',{}).get(key,[]):
+                    if is_ai(candidate):continue
+                    value=candidate.get('value')
+                    if cents(value) is None:continue
+                    add({**base,key:value},{**candidate,'field':key})
+        return list(result.values())
+    dates=[r['date'] for r in rows if r.get('date') and r.get('state')!='deleted']
+    descending=order=='descending' or order=='auto' and len(dates)>1 and dates[0]>dates[-1]
+    ordered=[r for r in (reversed(rows) if descending else rows) if r.get('state')!='deleted']
+    segments=[];segment=[];anchor=cents(opening)
+    for row in ordered:
+        if row.get('_opening_balance') is not None:
+            if segment:segments.append((anchor,segment));segment=[]
+            ai_opening=any('opening balance read by local ai' in str(issue).lower() for issue in row.get('_issues',[]))
+            ai_opening=ai_opening or 'opening_balance' in row.get('_inferred_fields',{}) or row.get('_opening_balance_source')=='ai'
+            anchor=None if ai_opening else cents(row['_opening_balance'])
+        segment.append(row)
+    if segment:segments.append((anchor,segment))
+    def apply_path(targets,paths):
+        if len(paths)!=1:return
+        for row,(values,evidence) in zip(targets,paths[0][1]):
+            if signature(row)==signature(values):continue
+            before={key:row.get(key) for key in keys}
+            row.setdefault('_candidate_selections',[]).append({'before':before,'selected':{key:values.get(key) for key in keys},'evidence':copy.deepcopy(evidence),'method':'unique exact observed balance path'})
+            for key in keys:
+                if cents(row.get(key))!=cents(values.get(key)):
+                    issue=f'{key}: observed alternate selected by whole-statement balance chain'
+                    if issue not in row.setdefault('_issues',[]):row['_issues'].append(issue)
+                row[key]=values.get(key)
+            row['_numeric_engine']=str(evidence.get('engine',evidence.get('_engine','Observed OCR')))
+            notice='Alternative OCR numbers selected using balance evidence; verify source'
+            if notice not in row['_issues']:row['_issues'].append(notice)
+    for anchor,segment in segments:
+        start=0
+        if anchor is None:
+            # An unchanged printed balance can anchor following transactions.
+            while start<len(segment) and (not observed(segment[start]) or cents(segment[start].get('balance')) is None):start+=1
+            if start==len(segment):continue
+            anchor=cents(segment[start].get('balance'));start+=1
+        paths=[(anchor,[])];island=[]
+        for row in segment[start:]:
+            next_paths={}
+            for previous,path in paths:
+                for values,evidence in variants(row):
+                    debit,credit,balance=signature(values)
+                    if previous-debit+credit!=balance:continue
+                    choices=path+[(values,evidence)]
+                    identity=tuple(signature(item[0]) for item in choices)
+                    next_paths.setdefault(identity,(balance,choices))
+            new_paths=list(next_paths.values())
+            if not new_paths or len(new_paths)>beam_width:
+                if not new_paths:apply_path(island,paths)
+                # A bad row breaks verification continuity. Its unchanged printed
+                # balance may independently anchor the next local source island.
+                anchor=cents(row.get('balance')) if observed(row) else None
+                paths=[(anchor,[])] if anchor is not None else []
+                island=[]
+                continue
+            paths=new_paths;island.append(row)
+        apply_path(island,paths)
     return rows

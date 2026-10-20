@@ -80,6 +80,9 @@ class ExtractionTests(unittest.TestCase):
     def test_balance_can_select_observed_alternative_but_cannot_invent_digits(self):
         rows,*_=extract_page(fixture(),2000,1)
         rows[0]['debit']=1300
+        # Emulate an uncorroborated bad reading, without the source candidates
+        # now recorded by extract_page itself.
+        rows[0]['_numeric_candidates']={}
         select_observed_candidates(rows,10000)
         self.assertEqual(rows[0]['debit'],1300)
         rows[0]['_alternatives']=[{'debit':1000,'credit':None,'balance':9000,'_engine':'Other OCR','confidence':.9}]

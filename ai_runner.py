@@ -29,13 +29,17 @@ for line in sys.stdin:
         with contextlib.redirect_stdout(sys.stderr):
             formatted=apply_chat_template(processor,model.config,'Table Recognition:',num_images=1)
             result=generate(model,processor,formatted,image=[request['image']],max_tokens=4096,temperature=0,verbose=False)
-        raw=result.text
+        raw=result.text;table_raw=raw;table_evidence=None
         try:parsed=parse_table(raw)
-        except (ValueError,TypeError):
+        except (ValueError,TypeError) as error:
+            table_evidence=getattr(error,'table_evidence',None)
             with contextlib.redirect_stdout(sys.stderr):
                 formatted=apply_chat_template(processor,model.config,prompt,num_images=1)
                 result=generate(model,processor,formatted,image=[request['image']],max_tokens=4096,temperature=0,verbose=False)
             raw=result.text;parsed=parse_json(raw)
+            if table_evidence:
+                parsed['_table_evidence']=table_evidence
+                parsed['_rejected_table_raw']=table_raw
         emit({'id':request.get('id'),'ok':True,'result':parsed,'raw':raw,
               'timing':{'inference_seconds':round(time.monotonic()-started,3)}})
         mx.clear_cache()

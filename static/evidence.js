@@ -16,6 +16,7 @@
         const date=new Date(raw+'T00:00:00Z');
         return Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===raw&&Number(raw.slice(0,4))>=1900&&Number(raw.slice(0,4))<=2100;
     };
+    const observedCandidate=item=>Boolean(item&&typeof item==='object'&&!['ai','ai_only','inferred'].includes(item.source)&&(item.source==='ocr'||!/\bai\b|\bglm\b|guess|inferred|estimate/i.test(String(item.engine??item._engine??''))));
     function classify(row){
         const financial=[],estimated=[],information=[];
         const add=(target,value)=>{if(!target.includes(value))target.push(value)};
@@ -30,13 +31,13 @@
         if(values.debit&&values.credit)add(financial,'Both debit and credit populated');
         if(!values.debit&&!values.credit)add(financial,'Transaction amount or direction unresolved');
         for(const key of ['debit','credit','balance']){
-            const candidates=(row._numeric_candidates?.[key]||[]).filter(item=>item&&typeof item==='object').map(item=>item.value);
-            candidates.push(...(row._alternatives||[]).filter(item=>item&&typeof item==='object').map(item=>item[key]));
+            const candidates=(row._numeric_candidates?.[key]||[]).filter(observedCandidate).map(item=>item.value);
+            candidates.push(...(row._alternatives||[]).filter(observedCandidate).map(item=>item[key]));
             const observed=new Set([row[key],...candidates].map(number).filter(value=>value!==null));
             if(observed.size>1)add(financial,`Conflicting ${key} readings`);
         }
-        const dates=(row._date_candidates||[]).map(item=>item&&typeof item==='object'?item.value:item);
-        dates.push(...(row._alternatives||[]).filter(item=>item&&typeof item==='object').map(item=>item.date));
+        const dates=(row._date_candidates||[]).filter(item=>!item||typeof item!=='object'||observedCandidate(item)).map(item=>item&&typeof item==='object'?item.value:item);
+        dates.push(...(row._alternatives||[]).filter(observedCandidate).map(item=>item.date));
         if(new Set([row.date,...dates].filter(value=>value!=null&&String(value).trim())).size>1)add(financial,'Conflicting date readings');
         const inferred=row._inferred_fields||{};
         for(const key of Object.keys(inferred)){
@@ -68,6 +69,8 @@
         const confidence=number(row.confidence);
         if(confidence!==null&&confidence<.80)add(information,'Low aggregate OCR confidence');
         if(row._ai_proposal&&Object.keys(row._ai_proposal).length&&row.normalized_description!==row.original_description)add(information,'Description includes an AI reading');
+        if(row._ai_rejected_fields?.length||Object.values(row._numeric_candidates||{}).some(items=>items.some(item=>!observedCandidate(item))))add(information,'AI proposals are separate from printed OCR readings');
+        if(row._source_repairs?.length)add(information,'Numeric values repaired from agreement between saved OCR passes');
         if(!String(row.normalized_description||row.original_description||'').trim())add(information,'Description missing');
         if(row.suspicious&&!(financial.length||estimated.length||information.length))add(financial,'Legacy suspicious flag has no explanation');
         const category=financial.length?'financial_error':estimated.length?'estimated_value':information.length?'information':'none';
@@ -99,9 +102,9 @@
                 status='missing';detail='The transaction amount or its direction is unresolved.';
             }else if(['debit','credit'].includes(key)&&both){
                 status='conflict';detail='Both debit and credit contain amounts.';
-            }else if(key==='date'&&distinct(row._date_candidates)>1){
+            }else if(key==='date'&&distinct((row._date_candidates||[]).filter(observedCandidate))>1){
                 status='conflict';detail='OCR passes read different dates.';
-            }else if(distinct(row._numeric_candidates?.[key])>1){
+            }else if(distinct((row._numeric_candidates?.[key]||[]).filter(observedCandidate))>1){
                 status='conflict';detail='OCR passes read different values. The selected reading may use balance evidence.';
             }else if(key==='normalized_description'){
                 if(!text(value)||/^unreadable description$/i.test(text(value))){status='missing';detail='The narration could not be read.';}

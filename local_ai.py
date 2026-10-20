@@ -1,5 +1,6 @@
 """Local AI proposals with source provenance and independent arithmetic checks."""
 import copy,json,os,queue,subprocess,threading,uuid,re,difflib,hashlib,time,atexit
+from datetime import date as calendar_date
 from pathlib import Path
 from PIL import Image,ImageOps,ImageEnhance
 from bank_engine import cents,normal_date,normalize,header_groups,parse_amount
@@ -186,8 +187,10 @@ class LocalAI:
             groups=header_groups(words)
             if groups and len({k for w,k in groups[0]})>=3:
                 headers=[w for w,k in groups[0]]
-                left=max(0,min(w['x'] for w in headers)-100)
-                right=min(im.width,max(w['x']+w['w'] for w in headers)+100)
+                # Header labels can end far before right-aligned balance digits.
+                # Never trim financial columns using the width of their labels.
+                left=0
+                right=im.width
                 top=max(0,min(w['y'] for w in headers)-35)
                 # Keep the complete table and a little footer context; the model excludes totals.
                 bottom=im.height
@@ -214,101 +217,249 @@ class LocalAI:
         pass
 
 
+def _ai_date(value):
+    raw=str(value or '')
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}',raw):
+        try:
+            parsed=calendar_date.fromisoformat(raw)
+            return raw if 1900<=parsed.year<=2100 else None
+        except ValueError:return None
+    return normal_date(raw)
+
+
+def _issue(row,message):
+    if message not in row.setdefault('_issues',[]):row['_issues'].append(message)
+
+
+def _ai_only(row):
+    return row.get('_ai_only') or row.get('_engine')=='Local GLM-OCR 8-bit AI'
+
+
+def _observed(row,key):
+    if _ai_only(row) or key in row.get('_inferred_fields',{}) or row.get('_field_sources',{}).get(key) in ('ai','ai_only','inferred'):return None
+    return cents(row.get(key))
+
+
+def _pair_score(row,item):
+    desc=normalize(str(item.get('description') or '')).lower()
+    original=normalize(str(row.get('original_description') or '')).lower()
+    similarity=difflib.SequenceMatcher(None,original,desc).ratio() if desc and original else 0
+    date=_ai_date(item.get('date'));same_date=bool(date and date==row.get('date'))
+    equal=0;score=.8*similarity+.5*same_date
+    for key in ('debit','credit','balance'):
+        before=cents(row.get(key));after=cents(item.get(key))
+        if before is not None and after is not None and before==after and (after!=0 or key=='balance'):
+            equal+=1;score+=.8 if key=='balance' else .65
+    # Date disagreements require strong shared visual evidence elsewhere.
+    if date and row.get('date') and date!=row['date']:
+        if equal<2 or similarity<.8:return 0
+        score-=.5
+    if similarity<.35 and equal<2:return 0
+    if not same_date and equal==0:return 0
+    return score if score>=1 else 0
+
+
+def _monotonic_alignment(rows,items):
+    """Maximum-evidence ordered alignment; only uniquely supported pairs survive."""
+    n=len(rows);m=len(items)
+    scores=[[_pair_score(row,item) for item in items] for row in rows]
+    forward=[[0.]*(m+1) for _ in range(n+1)]
+    backward=[[0.]*(m+1) for _ in range(n+1)]
+    for i in range(n):
+        for j in range(m):forward[i+1][j+1]=max(forward[i][j+1],forward[i+1][j],forward[i][j]+scores[i][j])
+    for i in range(n-1,-1,-1):
+        for j in range(m-1,-1,-1):backward[i][j]=max(backward[i+1][j],backward[i][j+1],backward[i+1][j+1]+scores[i][j])
+    optimum=forward[n][m];options={}
+    for j in range(m):
+        options[j]=[i for i in range(n) if scores[i][j]>0 and forward[i][j]+scores[i][j]+backward[i+1][j+1]>=optimum-.12]
+    matches={j:indices[0] for j,indices in options.items() if len(indices)==1}
+    # A near-tie may leave two proposal rows competing for one OCR row.
+    counts={i:list(matches.values()).count(i) for i in matches.values()}
+    matches={j:i for j,i in matches.items() if counts[i]==1}
+    conflicts=set()
+    for j,i in matches.items():
+        for other_j,other_i in matches.items():
+            if j<other_j and i>=other_i:conflicts.update((j,other_j))
+    return {j:i for j,i in matches.items() if j not in conflicts},scores
+
+
+def _record_proposal(row,item,status,reason=None):
+    entry={'proposal':copy.deepcopy(item),'status':status}
+    if reason:entry['reason']=reason
+    history=row.setdefault('_ai_proposals',[])
+    if entry not in history:history.append(entry)
+
+
+def _credible_name(person,narration):
+    person=normalize(person)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z .&'’-]{2,99}",person):return False
+    tokens=re.findall(r'[A-Z]+',person.upper())
+    forbidden={'TRANSFER','TRFR','TO','FROM','NEFT','RTGS','UPI','IMPS','PAYMENT','UNKNOWN','UNREADABLE','BANK','ACCOUNT','REF','UTR','NA','NIL'}
+    if not tokens or any(token in forbidden for token in tokens):return False
+    source=' '.join(re.findall(r'[A-Z]+',narration.upper()))
+    if ' '+' '.join(tokens)+' ' in ' '+source+' ':return True
+    # A small visual spelling repair still needs an exact neighboring name token.
+    # Sound alone is never enough to introduce a person absent from the narration.
+    from people import phonetic
+    source_tokens=source.split()
+    if len(tokens)<2:return False
+    for start in range(len(source_tokens)-len(tokens)+1):
+        segment=source_tokens[start:start+len(tokens)]
+        if not any(a==b and len(a)>=4 for a,b in zip(tokens,segment)):continue
+        if all(a==b or len(a)>=4 and len(b)>=4 and phonetic(a)==phonetic(b) and
+               difflib.SequenceMatcher(None,a,b).ratio()>=.75 for a,b in zip(tokens,segment)):
+            return True
+    return False
+
+
 def combine_ai(rows,proposal,page):
     if not isinstance(proposal,dict) or not isinstance(proposal.get('transactions'),list):return rows,None
-    combined=[];used=set();transactions=proposal['transactions'];opening=parse_amount(proposal.get('opening_balance'))
-    original_order={r['id']:i for i,r in enumerate(rows)};last_order=-1
-    if len(transactions)>1000:return rows,None
-    for item in transactions:
+    if len(proposal['transactions'])>1000 or len(rows)>1000:return rows,None
+    items=[];opening=parse_amount(proposal.get('opening_balance'))
+    for item in proposal['transactions']:
         if not isinstance(item,dict):continue
-        rawdate=str(item.get('date') or '')
-        date=normal_date(rawdate)
-        if re.fullmatch(r'\d{4}-\d{2}-\d{2}',rawdate):date=rawdate
         desc=str(item.get('description') or '')[:5000]
         if re.search(r'(?i)^\s*(?:b\s*/\s*f|opening\s+balance|brought\s+forward)\s*$',desc):
-            opening=opening if opening is not None else parse_amount(item.get('balance'))
+            if opening is None:opening=parse_amount(item.get('balance'))
             continue
         if re.search(r'(?i)^\s*(?:page\s*total|grand\s*total|closing\s*balance)\b',desc):continue
-        if not date and not desc:continue
-        if not date and all(parse_amount(item.get(k)) is None for k in ('debit','credit','balance')):continue
-        def alignment(r):
-            similarity=difflib.SequenceMatcher(None,r['original_description'].lower(),desc.lower()).ratio()
-            same_balance=cents(r.get('balance')) is not None and cents(r.get('balance'))==cents(item.get('balance'))
-            return .65*similarity+.25*(r.get('date')==date)+.1*same_balance
-        options=[r for r in rows if r['id'] not in used and alignment(r)>=.58]
-        matched=max(options,key=alignment,default=None)
-        if matched:
-            r=copy.deepcopy(matched);used.add(r['id'])
-            last_order=original_order[r['id']];r['_merge_order']=last_order
+        if not _ai_date(item.get('date')) and all(parse_amount(item.get(key)) is None for key in ('debit','credit','balance')):continue
+        items.append(item)
+    combined=copy.deepcopy(rows);matches,scores=_monotonic_alignment(rows,items);used=set(matches.values());extra=[]
+    for j,item in enumerate(items):
+        desc=str(item.get('description') or '')[:5000];date=_ai_date(item.get('date'))
+        if j in matches:
+            index=matches[j];r=combined[index];position=float(index)
         else:
+            possible=[i for i in range(len(rows)) if scores[i][j]>0]
+            # A proposed transaction sharing date and narration/reference with an
+            # existing row is audit evidence, not grounds to insert a duplicate.
+            duplicates=[]
+            for i,row in enumerate(rows):
+                original=str(row.get('original_description') or '')
+                similarity=difflib.SequenceMatcher(None,normalize(original).lower(),normalize(desc).lower()).ratio()
+                shared_number=any(cents(row.get(key)) is not None and cents(row.get(key))==cents(item.get(key)) and cents(item.get(key))!=0 for key in ('debit','credit','balance'))
+                shared_reference=bool(set(re.findall(r'\d{6,}',original)) & set(re.findall(r'\d{6,}',desc)))
+                if date and row.get('date')==date and similarity>=.7 or similarity>=.85 and (shared_number or shared_reference):duplicates.append(i)
+            if possible or duplicates:
+                for i in set(possible+duplicates):_record_proposal(combined[i],item,'rejected_alignment','Ambiguous or competing AI row; source order and values retained')
+                continue
             r={'id':str(uuid.uuid4()),'date':date,'original_description':desc,'normalized_description':desc,'cheque_number':'',
                'debit':None,'credit':None,'balance':None,'page':page,'confidence':.55,'suspicious':True,'reason':'',
-               'state':'review','crop':f'ai-table-{page}.png','ord':len(combined),'_issues':['AI-only transaction candidate; not independently confirmed'],
-               '_engine':'Local GLM-OCR 8-bit AI','_numeric_candidates':{}}
-            r['_merge_order']=last_order+.5 if rows else len(combined)
-        r['_ai_proposal']=item;r['_ocr_before_ai']={k:r.get(k) for k in ('date','original_description','debit','credit','balance')}
-        r.setdefault('_numeric_candidates',{})
+               'state':'review','crop':f'ai-table-{page}.png','_issues':['AI-only transaction candidate; not independently confirmed'],
+               '_engine':'Local GLM-OCR 8-bit AI','_ai_only':True,'_numeric_candidates':{}}
+            before=[i for k,i in matches.items() if k<j];after=[i for k,i in matches.items() if k>j]
+            position=(max(before)+.5 if before else min(after)-.5 if after else len(rows)+j+.5)
+            extra.append((position,j,r))
+        r.setdefault('_ocr_before_ai',{key:r.get(key) for key in ('date','original_description','debit','credit','balance')})
+        r['_ai_proposal']=copy.deepcopy(item);_record_proposal(r,item,'aligned' if j in matches else 'ai_only')
+        source='ai_only' if _ai_only(r) else 'ai'
         for key in ('debit','credit','balance'):
-            value=parse_amount(item.get(key))
+            value=parse_amount(item.get(key));current=r.get(key)
             if key!='balance' and value is not None:value=abs(value)
-            if value is None:continue
-            current=r.get(key)
-            choices=r['_numeric_candidates'].setdefault(key,[])
-            if current is not None and not any(cents(c['value'])==cents(current) for c in choices):
-                choices.append({'value':current,'confidence':r['confidence'],'engine':r['_engine']})
-            if not any(cents(c['value'])==cents(value) for c in choices):choices.append({'value':value,'confidence':.65,'engine':'Local GLM-OCR AI guess'})
-            if current is None:r[key]=value;r['_issues'].append(key+': filled by local AI estimate')
-        if not r.get('date') and date:r['date']=date;r['_issues'].append('Date proposed by local AI')
-        if normalize(desc)!=normalize(r.get('normalized_description','')):
-            r['normalized_description']=normalize(desc);r['_issues'].append('Description/name proposed by local AI; original OCR retained')
+            if value is None or key!='balance' and value==0:continue
+            choices=r.setdefault('_numeric_candidates',{}).setdefault(key,[])
+            if current is not None and _observed(r,key) is not None and not any(cents(c.get('value'))==cents(current) and c.get('source') not in ('ai','ai_only') for c in choices):
+                choices.append({'value':current,'confidence':r.get('confidence',0),'engine':r.get('_engine','OCR'),'source':'ocr'})
+            opposite='credit' if key=='debit' else 'debit'
+            corroborated=any(cents(c.get('value'))==cents(value) and c.get('source') not in ('ai','ai_only') and 'ai' not in str(c.get('engine','')).lower() for c in choices)
+            if key in ('debit','credit') and cents(r.get(opposite)) and not corroborated:
+                r.setdefault('_ai_rejected_fields',[])
+                rejected={'field':key,'value':value,'reason':'Opposite direction already populated; no independent source corroboration','source':source}
+                if rejected not in r['_ai_rejected_fields']:r['_ai_rejected_fields'].append(rejected)
+                continue
+            candidate={'value':value,'confidence':.65,'engine':'Local GLM-OCR AI guess','source':source}
+            if not any(cents(c.get('value'))==cents(value) and c.get('source')==source for c in choices):choices.append(candidate)
+            if current is None:
+                r[key]=value;r.setdefault('_field_sources',{})[key]=source
+                r.setdefault('_inferred_fields',{}).setdefault(key,{'method':'local AI visual estimate','value':value,'original_value':None,'not_printed_evidence':True})
+                _issue(r,key+': filled by local AI estimate')
+        if not r.get('date') and date:
+            r['date']=date;r.setdefault('_field_sources',{})['date']=source
+            r.setdefault('_inferred_fields',{}).setdefault('date',{'method':'local AI visual estimate','value':date,'original_value':None,'not_printed_evidence':True})
+            _issue(r,'Date proposed by local AI')
+        original=normalize(r.get('original_description',''))
+        similarity=difflib.SequenceMatcher(None,original.lower(),normalize(desc).lower()).ratio()
+        if desc and (source=='ai_only' or similarity>=.5) and normalize(desc)!=normalize(r.get('normalized_description','')):
+            r['normalized_description']=normalize(desc);_issue(r,'Description/name proposed by local AI; original OCR retained')
         if not r.get('cheque_number'):r['cheque_number']=str(item.get('cheque_number') or '')[:100]
         person=str(item.get('counterparty') or '').strip()[:150]
-        if person:
-            r['counterparty']=person
-            r.setdefault('_inferred_fields',{})['counterparty']={'method':'local AI reading/name guess','value':person,'not_verified_identity':True}
-            r['_issues'].append('Counterparty name is a local AI guess, not verified identity')
-        r['ord']=len(combined);combined.append(r)
-    # Never lose rows just because the generative model omitted one.
-    for r in rows:
-        if r['id'] not in used:
-            r=copy.deepcopy(r);r['_issues'].append('Local AI did not independently recover this OCR row');r['_merge_order']=original_order[r['id']];combined.append(r)
-    combined.sort(key=lambda r:r['_merge_order'])
-    for i,r in enumerate(combined):r['ord']=i;r.pop('_merge_order',None)
-    return combined,opening
+        if person and not r.get('counterparty'):
+            if source!='ai_only' and _credible_name(person,original):
+                r['counterparty']=person
+                r.setdefault('_inferred_fields',{})['counterparty']={'method':'local AI reading/name guess','value':person,'source_text':original,'not_verified_identity':True}
+                _issue(r,'Counterparty name is a local AI guess, not verified identity')
+            else:_record_proposal(r,item,'rejected_name','Name is not supported by the original narration')
+    for i,r in enumerate(combined):
+        if i not in used:_issue(r,'Local AI did not independently recover this OCR row')
+    ordered=[(float(i),-1,r) for i,r in enumerate(combined)]+extra
+    ordered.sort(key=lambda value:(value[0],value[1]))
+    result=[value[2] for value in ordered]
+    for i,r in enumerate(result):r['ord']=i
+    return result,opening
 
 
-def infer_missing_amounts(rows,opening=None):
-    previous=cents(opening)
-    for r in rows:
-        if r.get('_opening_balance') is not None:previous=cents(r['_opening_balance'])
-        bal=cents(r.get('balance'));debit=cents(r.get('debit'));credit=cents(r.get('credit'))
-        if previous is not None and bal is not None and not (debit or credit) and bal!=previous:
-            change=bal-previous;key='credit' if change>0 else 'debit'
-            r.setdefault('_inferred_fields',{})[key]={'method':'balance delta','value':abs(change)/100,'not_printed_evidence':True}
-            r[key]=abs(change)/100;r['_issues'].append(key+': inferred from balance delta, not directly read')
-        if previous is not None and bal is None and (debit or credit):
-            estimate=previous-(debit or 0)+(credit or 0)
-            r.setdefault('_inferred_fields',{})['balance']={'method':'previous balance and transaction amount','value':estimate/100,'not_printed_evidence':True}
-            r['balance']=estimate/100;bal=estimate
-            r['_issues'].append('Balance estimated from previous balance and transaction amount')
-        previous=bal
+def _segments(rows,opening,order):
+    active=[row for row in rows if row.get('state')!='deleted'];segments=[]
+    for row in active:
+        if not segments or segments[-1][-1].get('page')!=row.get('page') or row.get('_opening_balance') is not None:
+            segments.append([])
+        segments[-1].append(row)
+    dates=[r.get('date') for r in active if r.get('date')]
+    descending=order=='descending' or order=='auto' and len(dates)>1 and dates[0]>dates[-1]
+    if descending:segments=[list(reversed(segment)) for segment in reversed(segments)]
+    for index,segment in enumerate(segments):
+        marker=next((r for r in segment if r.get('_opening_balance') is not None),None)
+        initial=cents(opening) if index==0 else None
+        if marker is not None:
+            ai_opening=marker.get('_opening_balance_source') in ('ai','ai_only','inferred') or 'opening_balance' in marker.get('_inferred_fields',{}) or any('opening balance read by local ai' in str(issue).lower() for issue in marker.get('_issues',[]))
+            initial=None if ai_opening else cents(marker['_opening_balance'])
+        yield segment,initial
+
+
+def _observed_transaction(row):
+    if row.get('_direction')=='balance-supported':return None
+    debit=_observed(row,'debit');credit=_observed(row,'credit')
+    if debit and credit:return None
+    # Nonzero source amount is required; an inferred direction cannot anchor math.
+    if not (debit or credit):return None
+    if any(key in row.get('_inferred_fields',{}) for key in ('debit','credit')):return None
+    return (debit or 0,credit or 0)
+
+
+def _estimate(row,key,value,method,message):
+    if row.get('state') in ('approved','corrected','deleted') or row.get('_engine')=='Manual transcription' or any(row.get(k) for k in ('_manual_fields','_edited_fields','_manual','_edited','_corrected')):return
+    if key in row.get('_inferred_fields',{}):return
+    row.setdefault('_inferred_fields',{})[key]={'method':method,'value':value/100,'original_value':row.get(key),'not_printed_evidence':True}
+    row[key]=value/100;row.setdefault('_field_sources',{})[key]='inferred';_issue(row,message)
+
+
+def infer_missing_amounts(rows,opening=None,order='auto'):
+    for segment,previous in _segments(rows,opening,order):
+        for row in segment:
+            bal=_observed(row,'balance');debit=cents(row.get('debit'));credit=cents(row.get('credit'))
+            if previous is not None and bal is not None and not (debit or credit) and bal!=previous:
+                change=bal-previous;key='credit' if change>0 else 'debit'
+                _estimate(row,key,abs(change),'balance delta',key+': inferred from balance delta, not directly read')
+            transaction=_observed_transaction(row)
+            if previous is not None and row.get('balance') is None and transaction:
+                _estimate(row,'balance',previous-transaction[0]+transaction[1],'previous balance and transaction amount','Balance estimated from previous balance and transaction amount')
+            # The pre-estimate source balance is the only anchor for the next row.
+            previous=bal
     return rows
 
 
-def infer_two_sided_balances(rows,opening=None):
-    """Recover an isolated bad balance only when both adjacent equations imply the same value."""
-    previous=cents(opening)
-    for index,r in enumerate(rows):
-        if r.get('_opening_balance') is not None:previous=cents(r['_opening_balance'])
-        bal=cents(r.get('balance'));debit=cents(r.get('debit'));credit=cents(r.get('credit'))
-        if previous is not None and (debit is not None or credit is not None) and index+1<len(rows):
-            nxt=rows[index+1]
-            nb=cents(nxt.get('balance'));nd=cents(nxt.get('debit'));nc=cents(nxt.get('credit'))
-            if nxt['page']==r['page'] and nb is not None and (nd is not None or nc is not None):
-                left=previous-(debit or 0)+(credit or 0)
-                right=nb+(nd or 0)-(nc or 0)
-                if left==right and left!=bal:
-                    r.setdefault('_inferred_fields',{})['balance']={'method':'two adjacent balance equations','value':left/100,'original_value':r.get('balance'),'not_printed_evidence':True}
-                    r['balance']=left/100;r['_issues'].append('Balance estimated from two adjacent equations; original reading retained')
-        previous=cents(r.get('balance'))
+def infer_two_sided_balances(rows,opening=None,order='auto'):
+    """An explicit estimate requires two independent neighboring equations."""
+    for segment,previous in _segments(rows,opening,order):
+        for index,row in enumerate(segment):
+            source_balance=_observed(row,'balance');transaction=_observed_transaction(row)
+            if previous is not None and transaction and index+1<len(segment):
+                nxt=segment[index+1];next_balance=_observed(nxt,'balance');next_transaction=_observed_transaction(nxt)
+                if next_balance is not None and next_transaction:
+                    left=previous-transaction[0]+transaction[1]
+                    right=next_balance+next_transaction[0]-next_transaction[1]
+                    if left==right and left!=cents(row.get('balance')):
+                        _estimate(row,'balance',left,'two adjacent balance equations','Balance estimated from two adjacent equations; original reading retained')
+            previous=_observed(row,'balance')
     return rows

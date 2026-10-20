@@ -7,6 +7,12 @@ NUMERIC=('debit','credit','balance')
 ESTIMATED_FIELDS=(*NUMERIC,'date','opening_balance')
 
 
+def observed_candidate(item):
+    if not isinstance(item,dict):return False
+    if item.get('source') in ('ai','ai_only','inferred'):return False
+    return item.get('source')=='ocr' or not re.search(r'\bai\b|\bglm\b|guess|inferred|estimate',str(item.get('engine',item.get('_engine',''))),re.I)
+
+
 def number(value):
     if value is None or isinstance(value,bool) or str(value).strip()=='':return None
     try:
@@ -36,12 +42,12 @@ def classify_review(row):
     if values['debit'] and values['credit']:add(financial,'Both debit and credit populated')
     if not values['debit'] and not values['credit']:add(financial,'Transaction amount or direction unresolved')
     for key in NUMERIC:
-        candidates=[item.get('value') for item in (row.get('_numeric_candidates',{}).get(key) or []) if isinstance(item,dict)]
-        candidates.extend(item.get(key) for item in (row.get('_alternatives') or []) if isinstance(item,dict))
+        candidates=[item.get('value') for item in (row.get('_numeric_candidates',{}).get(key) or []) if observed_candidate(item)]
+        candidates.extend(item.get(key) for item in (row.get('_alternatives') or []) if observed_candidate(item))
         observed={value for candidate in [row.get(key),*candidates] if (value:=number(candidate)) is not None}
         if len(observed)>1:add(financial,f'Conflicting {key} readings')
-    dates=[item.get('value') if isinstance(item,dict) else item for item in (row.get('_date_candidates') or [])]
-    dates.extend(item.get('date') for item in (row.get('_alternatives') or []) if isinstance(item,dict))
+    dates=[item.get('value') if isinstance(item,dict) else item for item in (row.get('_date_candidates') or []) if not isinstance(item,dict) or observed_candidate(item)]
+    dates.extend(item.get('date') for item in (row.get('_alternatives') or []) if observed_candidate(item))
     if len({value for value in [row.get('date'),*dates] if value is not None and str(value).strip()})>1:
         add(financial,'Conflicting date readings')
     inferred=row.get('_inferred_fields') or {}
@@ -82,6 +88,9 @@ def classify_review(row):
     if confidence is not None and confidence<Decimal('.80'):add(information,'Low aggregate OCR confidence')
     if row.get('_ai_proposal') and row.get('normalized_description')!=row.get('original_description'):
         add(information,'Description includes an AI reading')
+    if row.get('_ai_rejected_fields') or any(not observed_candidate(item) for items in (row.get('_numeric_candidates') or {}).values() for item in items):
+        add(information,'AI proposals are separate from printed OCR readings')
+    if row.get('_source_repairs'):add(information,'Numeric values repaired from agreement between saved OCR passes')
     if not str(row.get('normalized_description') or row.get('original_description') or '').strip():
         add(information,'Description missing')
     if row.get('suspicious') and not (financial or estimated or information):

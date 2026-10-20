@@ -7,8 +7,8 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
-from bank_engine import extract_page, group_lines, is_statement, normalize, ocr, pass_score, reconcile, parse_amount, cents, select_observed_candidates
-from people import suggestions,automatic_counterparties
+from bank_engine import extract_page, group_lines, is_statement, normalize, ocr, pass_score, reconcile, parse_amount, cents, select_observed_candidates, match_ocr_rows
+from people import suggestions,automatic_counterparties,repair_counterparty_guesses
 from table_grid import extract_grid,recover_reversed_headers,decode_balance_chain
 from local_ai import LocalAI,combine_ai,infer_missing_amounts,infer_two_sided_balances,ai_worker_stats
 from automation import atomic_json,empty_summary,prepared_rows,export_bytes,write_document_outputs,atomic_bytes,FIELDS
@@ -24,6 +24,8 @@ ACTIVITY_LOCK=threading.RLock()
 CAPACITY_CHANGED=threading.Condition(ACTIVITY_LOCK)
 ACTIVE_JOBS=set()
 SLEEP_GUARD=None
+SOURCE_REPAIR_REVISION='source-evidence-2'
+SOURCE_REPAIR_BACKUP=None
 
 
 def resource_plan():
@@ -167,7 +169,11 @@ def finish_outputs(doc,rows=None):
     with EXPORT_LOCK:
         d=document(doc);rows=rows if rows is not None else rows_for(doc)
         if d['status'] not in ('ready','unsupported','needs_layout'):return
-        with connection() as c:references=[r['id'] for r in c.execute("SELECT id FROM bank_documents WHERE status='ready' AND id<>?",(doc,))]
+        with connection() as c:
+            references=[r['id'] for r in c.execute("SELECT id FROM bank_documents WHERE status='ready' AND id<>?",(doc,))]
+            protected=[r['row_id'] for r in c.execute('SELECT DISTINCT row_id FROM audit WHERE document_id=? AND row_id IS NOT NULL',(doc,))]
+        rows,name_report=repair_counterparty_guesses(rows,protected_ids=protected)
+        d['report']['name_cleanup']=name_report
         automatic_counterparties(rows,[r for other in references for r in rows_for(other)])
         save_rows(doc,rows)
         d['report']['automatic']=automatic_report(rows)
@@ -184,11 +190,52 @@ def finish_outputs(doc,rows=None):
             atomic_bytes(exports/f'All statements.{kind}',export_bytes(kind,combined,{'name':'All completed bank statements','report':{'warnings':warnings}},['source_document','document_id',*FIELDS]))
 
 
+def apply_cached_source_repairs(doc,rows=None):
+    """Apply evidence-only repairs once, with a database and row-level backup."""
+    global SOURCE_REPAIR_BACKUP
+    from source_repair import repair_cached_rows
+    with EXPORT_LOCK:
+        d=document(doc);original=rows if rows is not None else rows_for(doc)
+        coverage=max((r.get('page',0) for r in original),default=0)
+        if d['config'].get('source_repair_revision')==SOURCE_REPAIR_REVISION and d['config'].get('source_repair_pages',0)>=coverage:return original
+        with connection() as c:
+            protected=[r['row_id'] for r in c.execute('SELECT DISTINCT row_id FROM audit WHERE document_id=? AND row_id IS NOT NULL',(doc,))]
+        updated,notes=repair_cached_rows(original,DOCS/doc,
+            {page['page']:page.get('columns',{}) for page in d['report'].get('pages',[])},
+            opening=d['config'].get('opening'),order=d['config'].get('order','auto'),protected_ids=protected)
+        config={**d['config'],'source_repair_revision':SOURCE_REPAIR_REVISION,'source_repair_pages':coverage}
+        report={**d['report'],'source_repair':{**notes,'revision':SOURCE_REPAIR_REVISION}}
+        if notes['applied_rows']:
+            backups=DATA/'backups';backups.mkdir(exist_ok=True,mode=0o700)
+            if SOURCE_REPAIR_BACKUP is None:
+                target=backups/('before-source-evidence-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'.sqlite3')
+                with connection() as source,sqlite3.connect(target,factory=ClosingConnection) as backup:source.backup(backup)
+                target.chmod(0o600);SOURCE_REPAIR_BACKUP=str(target)
+            atomic_json(DOCS/doc/f'before-{SOURCE_REPAIR_REVISION}.json',
+                        {'rows':original,'config':d['config'],'report':d['report'],'source_signature':source_signature(DOCS/doc)})
+            reconcile(updated,opening=config.get('opening'),order=config.get('order','auto'),infer=False)
+            before={r['id']:r for r in original}
+            with connection() as c:
+                for row in updated:
+                    if len(row.get('_source_repairs',[]))>len(before[row['id']].get('_source_repairs',[])):
+                        c.execute('INSERT INTO audit(document_id,row_id,time,before_json,after_json) VALUES(?,?,?,?,?)',
+                                  (doc,row['id'],stamp(),json.dumps(before[row['id']]),json.dumps(row)))
+                save_rows(doc,updated,c)
+            checkpoint=DOCS/doc/'checkpoint.json'
+            if checkpoint.exists():
+                state=json.loads(checkpoint.read_text())
+                if state.get('source_signature')==source_signature(DOCS/doc):
+                    state.update(rows=updated,config=config,report=report);atomic_json(checkpoint,state)
+        status(doc,config=config,report=report)
+        return updated
+
+
 def restore_completed_outputs():
     with connection() as c:finished=[r['id'] for r in c.execute("SELECT id FROM bank_documents WHERE status IN ('ready','needs_layout','unsupported')")]
     for doc in finished:
         try:
             rows=rows_for(doc);d=document(doc);excluded=False
+            if d['status']=='ready':rows=apply_cached_source_repairs(doc,rows);d=document(doc)
             for page in range(1,(d.get('pages') or 0)+1):
                 cache=DOCS/doc/f'ocr-{page}-tesseract.json'
                 if not cache.exists():continue
@@ -286,6 +333,9 @@ def process(doc):
                 if ai.available:report['engines'].append('Local GLM-OCR 8-bit AI')
             except Exception as e:report['warnings'].append(f'Local AI failed to load ({type(e).__name__}); OCR retained.')
         allrows=resumed['rows'] if resumed else []
+        if resumed and allrows:
+            allrows=apply_cached_source_repairs(doc,allrows)
+            refreshed=document(doc);config=refreshed['config'];report=refreshed['report']
         columns=resumed.get('columns',{}) if resumed else {}
         bank_evidence=resumed.get('bank_evidence','') if resumed else ''
         recognized=resumed.get('recognized',False) if resumed else False
@@ -348,12 +398,13 @@ def process(doc):
                 warnings.append(f'Page {page}: account summary explicitly states there are no transactions.')
             if opening is not None and config.get('opening') is None and not allrows:
                 config['opening']=opening; config['opening_source']='Printed opening balance'
+            pass_matches={other[1]:match_ocr_rows(page_rows,other[3]) for other in parsed if other[1]!=name}
             for r in page_rows:
                 if r.get('_cell_evidence'):continue
                 r['_engine']=name; r['_agreement']=0; r['_alternatives']=[]
                 for other in parsed:
                     if other[1]==name: continue
-                    match=next((q for q in other[3] if abs(q['_top']-r['_top'])<max(50,height*.008) and q['date']==r['date']),None)
+                    match=pass_matches.get(other[1],{}).get(r['id'])
                     if match:
                         r['_alternatives'].append({**{k:match.get(k) for k in NUMERIC},'_engine':other[1],'confidence':match['confidence']})
                     if match and all(cents(match.get(k))==cents(r.get(k)) for k in NUMERIC): r['_agreement']+=1
@@ -381,6 +432,7 @@ def process(doc):
                         if opening is not None:assisted[0]['_opening_balance']=opening
                         elif ai_opening is not None:
                             assisted[0]['_opening_balance']=ai_opening
+                            assisted[0]['_opening_balance_source']='ai'
                             assisted[0]['_issues'].append('Opening balance read by local AI; verify source')
                         page_rows=assisted;allrows.extend(assisted)
                         report['pages'][-1]['rows']=len(page_rows)
@@ -388,14 +440,14 @@ def process(doc):
                         if any(r.get('date') and r.get('balance') is not None and (r.get('debit') or r.get('credit')) for r in assisted):
                             recognized=recognized or is_statement(bank_evidence,{'balance':0,'debit':0})
                 except Exception as e:report['warnings'].append(f'Page {page}: local AI did not complete ({type(e).__name__}); OCR rows retained.')
-            decode_balance_chain(allrows,config.get('opening'))
-            infer_two_sided_balances(allrows,config.get('opening'))
-            infer_missing_amounts(allrows,config.get('opening'))
+            decode_balance_chain(allrows,config.get('opening'),order=config.get('order','auto'))
+            infer_two_sided_balances(allrows,config.get('opening'),order=config.get('order','auto'))
+            infer_missing_amounts(allrows,config.get('opening'),order=config.get('order','auto'))
             select_observed_candidates(allrows,config.get('opening'),config.get('order','auto'))
             reconcile(allrows,config.get('opening'),config.get('order','auto'),infer=True)
             current=[r for r in allrows if r['page']==page and r.get('state')!='deleted']
-            unresolved=any(not r.get('date') or r.get('balance') is None or (r.get('debit') is None and r.get('credit') is None)
-                           or 'balance mismatch' in r.get('reason','') for r in current)
+            from review_checks import classify_review
+            unresolved=any(classify_review(r)['review_required'] for r in current)
             if ai and ai.available and unresolved and not explicit_empty_summary:
                 status(doc,stage=f'Automatically recovering uncertain numbers on page {page} of {total}')
                 try:
@@ -404,8 +456,8 @@ def process(doc):
                     if recovered:
                         previous=[r for r in allrows if r['page']!=page]
                         allrows=previous+recovered
-                        decode_balance_chain(allrows,config.get('opening'))
-                        infer_two_sided_balances(allrows,config.get('opening'));infer_missing_amounts(allrows,config.get('opening'))
+                        decode_balance_chain(allrows,config.get('opening'),order=config.get('order','auto'))
+                        infer_two_sided_balances(allrows,config.get('opening'),order=config.get('order','auto'));infer_missing_amounts(allrows,config.get('opening'),order=config.get('order','auto'))
                         select_observed_candidates(allrows,config.get('opening'),config.get('order','auto'))
                         reconcile(allrows,config.get('opening'),config.get('order','auto'),infer=True)
                         report['pages'][-1]['rows']=len(recovered)
@@ -418,11 +470,29 @@ def process(doc):
                         'rows':allrows,'report':report,'config':config,'columns':columns,'bank_evidence':bank_evidence,'recognized':recognized})
             image.unlink(missing_ok=True); (folder/'enhanced.png').unlink(missing_ok=True)
         report['statement_detected']=recognized
+        manual_state=folder/'reextract-state.json'
+        if manual_state.exists():
+            from manual_overrides import apply_manual_overrides
+            saved=json.loads(manual_state.read_text())
+            if saved.get('source_signature')==source_signature(folder):
+                allrows,report['manual_corrections']=apply_manual_overrides(allrows,saved)
+                if report['manual_corrections'].get('unmatched_overrides'):
+                    report['warnings'].append(f"{report['manual_corrections']['unmatched_overrides']} saved manual corrections could not be matched safely; retained in reextract-state.json.")
+                reconcile(allrows,opening=config.get('opening'),order=config.get('order','auto'),infer=False)
+            else:report['warnings'].append('Saved manual corrections were not applied: the original PDF has changed.')
         replace_rows(doc,allrows)
+        if recognized:
+            status(doc,report=report,config=config)
+            allrows=apply_cached_source_repairs(doc,allrows)
+            refreshed=document(doc);config=refreshed['config'];report=refreshed['report']
         report['automatic']=automatic_report(allrows)
         if not recognized: report['warnings'].insert(0,'No bank transaction table was confidently identified. A diagnostic report was saved automatically.')
         status(doc,status='ready' if recognized else 'unsupported',stage='Extraction complete' if recognized else 'No bank transactions identified',report=report,progress=total,config=config)
         finish_outputs(doc,allrows)
+        final_state=folder/'checkpoint.json'
+        if final_state.exists():
+            saved=json.loads(final_state.read_text());saved.update(rows=rows_for(doc),config=document(doc)['config'],report=document(doc)['report'])
+            atomic_json(final_state,saved)
     except Exception as e:
         detail=getattr(e,'stderr','') or str(e)
         (folder/'processing-error.log').write_text(detail)

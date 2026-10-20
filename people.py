@@ -1,5 +1,6 @@
 """Local spelling/phonetic suggestions, never identity verification or web lookup."""
 import difflib
+import copy
 import re
 import unicodedata
 from collections import Counter,defaultdict
@@ -144,3 +145,72 @@ def automatic_counterparties(rows,reference_rows=()):
             'source_text':source,'value':row['counterparty'],'not_verified_identity':True}
         if candidates:row['_counterparty_candidates']=sorted(candidates,key=lambda item:(-item['score'],-item['support']))[:3]
     return rows
+
+
+def repair_counterparty_guesses(rows,protected_ids=()):
+    """Return repaired copies and counts; reject only unsupported legacy AI names.
+
+    Rejected counts name proposals removed; replaced counts that subset receiving
+    an explicit source-backed replacement. Unchanged counts untouched input rows.
+    Financial fields, source narrations and manually controlled rows are preserved.
+    """
+    from local_ai import _credible_name
+
+    result=copy.deepcopy(rows)
+    protected=set(protected_ids)
+    report={'rejected':0,'replaced':0,'unchanged':len(result)}
+    rejected_indexes=[]
+    manual_flags=('_manual_fields','_edited_fields','_manual','_corrected','_edited')
+    for index,row in enumerate(result):
+        inferred=row.get('_inferred_fields')
+        metadata=inferred.get('counterparty') if isinstance(inferred,dict) else None
+        if not isinstance(metadata,dict) or not re.search(r'\blocal[\s_-]*ai\b',str(metadata.get('method','')),re.I):
+            continue
+        person=row.get('counterparty')
+        if not isinstance(person,str) or not person.strip():
+            continue
+        if (row.get('id') in protected or row.get('state') in ('approved','corrected','deleted')
+            or row.get('_engine')=='Manual transcription' or any(row.get(flag) for flag in manual_flags)
+            or any(metadata.get(flag) for flag in ('manual','corrected','edited','user_confirmed'))
+            or row.get('_field_sources',{}).get('counterparty') in ('manual','user','corrected')):
+            continue
+        # Old edit paths retained inference metadata. A changed value is protected
+        # even when a caller cannot supply its audit-history row ID.
+        if metadata.get('value') is not None and _name_key(str(metadata['value']))!=_name_key(person):
+            continue
+        original=str(row.get('original_description') or '')
+        generic=_name_key(person) in _NON_NAMES
+        if not generic and _credible_name(person,original):
+            continue
+        provenance={'value':person,'original_value':person,'provenance':copy.deepcopy(metadata),
+                    'source_text':original,'reason':'Legacy local AI name was not a credible person/company reading anchored in the original narration',
+                    'not_verified_identity':True}
+        if '_counterparty_candidates' in row:
+            provenance['original_candidates']=copy.deepcopy(row['_counterparty_candidates'])
+        history=row.setdefault('_rejected_counterparty_guesses',[])
+        if provenance not in history:
+            history.append(provenance)
+        row['counterparty']=''
+        inferred.pop('counterparty',None)
+        row.pop('_counterparty_candidates',None)
+        rejected_indexes.append(index)
+        report['rejected']+=1
+        report['unchanged']-=1
+
+    # Run the existing narrow source-name policy on scratch copies. In particular,
+    # AI-normalized narration must never become the source for a replacement.
+    fallback=copy.deepcopy([result[index] for index in rejected_indexes])
+    for row in fallback:
+        row['normalized_description']=row.get('original_description') or ''
+    references=[row for row in result if str(row.get('original_description') or '').strip()]
+    automatic_counterparties(fallback,references)
+    for index,replacement in zip(rejected_indexes,fallback):
+        if not replacement.get('counterparty'):
+            continue
+        row=result[index]
+        row['counterparty']=replacement['counterparty']
+        row.setdefault('_inferred_fields',{})['counterparty']=copy.deepcopy(replacement['_inferred_fields']['counterparty'])
+        if '_counterparty_candidates' in replacement:
+            row['_counterparty_candidates']=copy.deepcopy(replacement['_counterparty_candidates'])
+        report['replaced']+=1
+    return result,report

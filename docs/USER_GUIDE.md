@@ -4,7 +4,7 @@ Free local bank statement OCR, automatic table extraction, AI-assisted recovery,
 
 ## Open the app
 
-Open **outputs/Private Statement Reader.app**. It can also be dragged to Applications. On this Mac the free OCR dependencies are already installed. If missing on a different Mac, run **outputs/Setup.command** once; Homebrew must already be installed from https://brew.sh. Installation requires Internet; document processing does not.
+Open **Private Statement Reader.app** in the delivery folder, or in **outputs/** when building from source. It can also be dragged to Applications. If the free OCR dependencies are missing, run the included **Setup.command** once; Homebrew must already be installed from https://brew.sh. Installation requires Internet; document processing does not.
 
 Requires Apple Silicon, macOS 14 or later, Homebrew Python 3, Tesseract, OCRmyPDF, and Poppler. The app bundles its Python application code, Pillow, and openpyxl, but **does not bundle the Python interpreter or Homebrew OCR programs**. It is built and ad-hoc signed for local use, not Apple-notarized for public distribution. On another Mac, macOS may require right-click → Open or an allowance in Privacy & Security. No Apple developer subscription is needed to build or use it locally.
 
@@ -29,6 +29,16 @@ Completed pages have durable checkpoints. A failed document is retried automatic
 
 Identical PDFs already imported are reused. Pending duplicate copies in an older library are excluded from the processing queue while their source files remain stored. This prevents duplicate work and duplicate totals in the automatically combined export.
 
+## Extraction evidence and automatic repair
+
+Version 0.6.0 checks source positions before assigning numbers to columns. It uses the right edges of printed amounts to handle right-aligned debit, credit and balance columns. AI tables with shifted or incomplete cells are rejected when the column mapping cannot be established safely.
+
+AI rows are matched to OCR rows in printed order using dates, numbers and narration. Ambiguous matches stay in the proposal history. They do not replace source rows or insert likely duplicates. Accepted AI values remain estimates. Rejected AI proposals stay available in the evidence record; they do not by themselves count as conflicting printed OCR readings. Original narration and the first OCR baseline remain available after recovery attempts.
+
+Arithmetic estimates use independently observed anchors. Estimated or AI-only balances cannot start a chain of further estimates. The checks respect date order, page boundaries and printed opening balances. Missing or conflicting evidence can therefore remain unresolved after automatic processing.
+
+At startup, the app can repair saved numeric values from cached OCR evidence. Before writing changed rows, it makes a private backup. Repairs require two independent OCR passes to agree on the source row and its values. Every applied repair keeps a snapshot and the supporting source positions. Rows are not dropped, and manual edits are protected. This step requires no new model call or manual approval. It does not establish a measured extraction accuracy percentage.
+
 ## OCR and bank specialization
 
 Thorough mode is the default. It compares:
@@ -43,7 +53,7 @@ Thorough mode is the default. It compares:
 
 Each page is rendered up to 4,500 pixels on its longest side. OCR words are regrouped geometrically so separate OCR blocks do not destroy table rows. Header synonyms include withdrawal/debit, deposit/credit, particulars/narration, cheque/reference, and balance. Detected column centers carry over to following pages; unfamiliar tables can be calibrated manually by percentage of page width. Wrapped narration is retained when it aligns with the description column.
 
-The strongest structural candidate is retained. Numeric conflicts appear in Financial checks; a missing match from another OCR pass remains an information note unless a concrete financial conflict is present. With AI-assisted automatic recovery, unknown amounts can be estimated from the balance delta; an isolated wrong balance can be proposed from two adjacent equations when both imply the same value. Such values are explicitly labeled as **inferred**, with original readings and methods retained. They are not claimed to be independently printed evidence. Raw OCR geometry, AI proposals, and cell evidence stay local. Confidence is an OCR quality score, **not a measured probability that the transaction is correct**. Agreement and reconciliation are useful evidence, not proof: missing transactions or matching errors can still pass arithmetic.
+The strongest structural candidate is retained. Numeric conflicts between source readings appear in Financial checks; a missing match from another OCR pass remains an information note unless a concrete financial conflict is present. Rejected AI guesses remain proposals and do not create a printed-source conflict. With AI-assisted automatic recovery, unknown amounts can be estimated from independently observed balance anchors; an isolated wrong balance can be proposed from two adjacent equations when both imply the same value. Such values are explicitly labeled as **inferred**, with original readings and methods retained. They cannot anchor further estimates and are not claimed to be independently printed evidence. Raw OCR geometry, AI proposals, and cell evidence stay local. Confidence is an OCR quality score, **not a measured probability that the transaction is correct**. Agreement and reconciliation are useful evidence, not proof: missing transactions or matching errors can still pass arithmetic.
 
 Bank-statement recognition requires account/statement evidence plus a monetary table with balance, a structured AI reading of financial transactions, or an explicit empty account summary. Unrecognized documents receive an automatic diagnostic report and an **unsupported** status. No manual column calibration is required to finish the batch. This is a heuristic gate, not a trained document classifier or bank-certified parser.
 
@@ -93,10 +103,25 @@ For development without the Mac wrapper, run `.venv/bin/python app.py` and open 
 
 ## Verification and honest limits
 
+### Fresh extraction after an engine update
+
+Quit the app before you restart the library. The source project includes a local restart tool:
+
+```sh
+python3 restart_all.py --data "$HOME/Library/Application Support/Private Statement Reader"
+python3 restart_all.py --data "$HOME/Library/Application Support/Private Statement Reader" --apply
+```
+
+The first command checks the library without changes. The second backs up the database, archives generated files and old exports, and queues all original documents for new extraction. Open the updated app to start the queue. Original PDFs stay unchanged. The backup is in the local data folder under `backups/rerun-*`. Old page images and results stay under each document's `runs/` folder.
+
+The tool retains explicit reviewer corrections and approvals. The app restores them only when it can match the source row without ambiguity. Unmatched corrections remain in `reextract-state.json` and are reported; they are not silently attached to another transaction. This is a full rerun, not an accuracy guarantee. Do not run the restart tool while extraction is active.
+
 ```sh
 python3 -m unittest discover -s tests -v
 python3 tests/smoke_local.py
 ```
+
+Unit-test discovery includes `test_candidate_safety.py`, `test_ai_evidence.py`, `test_ai_tables.py` and `test_source_repair.py`. These cover source candidates, ordered AI matching, strict table columns and cached consensus repairs with synthetic evidence. They do not measure real-world extraction accuracy.
 
 The smoke test creates a clearly labeled synthetic two-page Indian statement (including a faint page) and runs actual OCR, searchable-PDF generation, HTTP review, name suggestions, exports, corrections, audit, and reconciliation. Its data is under `work/smoke-data`, not your real app library.
 

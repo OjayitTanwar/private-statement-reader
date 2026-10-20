@@ -44,8 +44,8 @@ The app supports light and dark appearance. It resumes from completed pages afte
 1. Import the statement PDFs.
 2. The app makes searchable PDFs and page images.
 3. Several OCR passes identify the transaction table.
-4. Table detection separates columns and wrapped descriptions.
-5. The local AI model can supply additional readings.
+4. Table detection uses source positions, including the right edges of printed amounts, to separate columns and wrapped descriptions.
+5. The local AI model supplies additional readings. Ordered matching checks dates, numbers and narration before attaching a proposal to an OCR row.
 6. Balance checks compare the candidate amounts.
 7. The app saves the results and marks unresolved readings.
 
@@ -59,6 +59,18 @@ The original PDF stays unchanged.
 AI guesses and arithmetic estimates do not become confirmed source readings.
 Processing does not stop for manual approval.
 However, high-stakes use still requires independent checks.
+
+AI tables with shifted, missing or extra cells are rejected when their columns cannot be established safely.
+An ambiguous AI row does not replace an OCR row or create a likely duplicate.
+Rejected proposals remain in the evidence record. A rejected proposal alone is not a conflict between printed OCR readings.
+Accepted AI values stay labeled as estimates.
+
+Arithmetic estimates use independently observed anchors within statement segments.
+An estimated balance cannot supply the anchor for the next estimate.
+Before changing saved rows at startup, the app makes a private backup.
+It can then compare cached OCR passes and apply numeric repairs supported by two independent passes.
+Each repair keeps a snapshot and its source evidence. Rows and manual edits are preserved.
+This repair step needs no new AI model call or manual approval.
 
 ## Install
 
@@ -240,6 +252,9 @@ node tests/test_evidence.cjs
 node tests/test_triage_ui.cjs
 ```
 
+The Python discovery command includes candidate safety, AI evidence matching, strict AI table parsing and cached source repair tests.
+These use synthetic data and do not measure accuracy on real bank statements.
+
 Run the end-to-end OCR test on a Mac with the OCR tools installed:
 
 ```sh
@@ -273,6 +288,7 @@ table_grid.py     Image-based table detection and candidate selection
 local_ai.py       Local model pool, cache and labeled estimates
 automation.py     Checkpoints and automatic exports
 review_checks.py  Financial checks and information-note classification
+source_repair.py  Cached OCR consensus repairs with source provenance
 people.py         Conservative name suggestions
 tests/            Synthetic fixtures and source tests
 ```
