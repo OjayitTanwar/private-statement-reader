@@ -1,6 +1,7 @@
 'use strict';
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
 let selected=null,docs=[],rows=[],selectedRow=null,query='',filter='all',peopleMode=false,rowLimit=100,loading=false,currentPage=1,health={},refreshing=false,rowsSignature='',pendingRefresh=false,issuePage=0,processingRowsKey='';
+let resourceMode=false,resourceSnapshot=null,resourcePolling=false;
 const money=v=>v==null?'—':new Intl.NumberFormat('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}).format(v);
 const evidence=r=>globalThis.StatementEvidence.describe(r);
 const matchesSearch=r=>[r.original_description,r.normalized_description,r.counterparty,r.cheque_number,r.date,...(r.people_suggestions||[]).map(p=>p.name)].join(' ').toLowerCase().includes(query.toLowerCase());
@@ -23,7 +24,7 @@ function renderDocs(){
     $('#documents').innerHTML=groups.map(([name,test])=>{const list=docs.filter(test);return list.length?`<section class="document-group" aria-label="${name}"><h3>${name}</h3><div class="document-group-list">${list.map(d=>`<button class="doc ${d.id===selected&&!peopleMode?'selected':''}" data-doc="${esc(d.id)}" aria-current="${d.id===selected&&!peopleMode?'page':'false'}">${icon}<span class="doc-copy"><span class="doc-name">${esc(d.name||'Untitled statement')}</span><small>${esc(status(d))} · ${d.progress||0}/${d.pages||'?'} pages</small></span></button>`).join('')}</div></section>`:''}).join('');
     $('#documents').querySelectorAll('[data-doc]').forEach(b=>b.onclick=()=>openDoc(b.dataset.doc));
 }
-async function openDoc(id){selected=id;peopleMode=false;selectedRow=null;rows=[];rowsSignature='';processingRowsKey='';rowLimit=100;currentPage=1;issuePage=0;loading=true;$('#alert').innerHTML='';await refresh()}
+async function openDoc(id){selected=id;peopleMode=false;resourceMode=false;selectedRow=null;rows=[];rowsSignature='';processingRowsKey='';rowLimit=100;currentPage=1;issuePage=0;loading=true;$('#alert').innerHTML='';await refresh()}
 async function loadRows(){const id=selected,next=await api('/api/rows/'+id);if(id!==selected)return;rows=next;rowsSignature=JSON.stringify(rows);pendingRefresh=false;if(!rows.some(r=>r.id===selectedRow))selectedRow=rows.find(r=>r.state!=='deleted')?.id||null}
 function empty(){$('#content').innerHTML=`<div class="empty"><h2>Import bank statements</h2><p>Choose your PDFs together. The app reads the pages, checks running balances, and saves CSV and Excel files automatically.</p><button id="emptyImport" class="primary">Choose bank statements</button><p class="muted">Processing stays on this Mac. Source images appear above uncertain readings; inspection and corrections are optional.</p></div>`;$('#emptyImport').onclick=()=>$('#file').click()}
 function renderProcessing(){loading=true;let d=doc(),r=health.resources||{};$('#content').innerHTML=`<div class="titlebar"><div><h2>${esc(d.name)}</h2><p class="muted">${esc(d.stage)}</p><p class="muted">${triageSummary(triageCounts())}</p></div></div><progress aria-label="Pages processed" max="${d.pages||100}" value="${d.progress}"></progress><p class="muted">${d.progress} of ${d.pages||'?'} pages read. ${batchSummary()}.</p><p class="muted">${r.document_workers?`Up to ${r.document_workers} statements run together, with resources shared across your Mac. `:''}Finished spreadsheets are saved automatically. You can close this window and processing continues. After quitting, unfinished work resumes when you reopen the app.</p>${d.report?.warnings?.length?`<details><summary>Processing notes</summary><p class="muted">${esc(d.report.warnings.at(-1))}</p></details>`:''}<div class="toolbar"><input id="search" type="search" aria-label="Search descriptions, references and names" placeholder="Search transactions" value="${esc(query)}"><select id="filter" aria-label="Filter rows">${filterOptions()}</select></div><section id="uncertainReadings" class="uncertain-readings" aria-labelledby="uncertainTitle"></section>`;bindRowFilters();renderUncertain()}
@@ -100,7 +101,39 @@ renderReview=function(){
 function openFinishedFiles(){const bridge=window.webkit?.messageHandlers?.finishedFiles;if(bridge)bridge.postMessage({action:'openFinishedFiles'});else toast('Finished files are in the exports folder inside your local Statement Reader data folder.')}
 $('#finishedFiles').onclick=openFinishedFiles;
 async function people(){peopleMode=true;renderDocs();let list=await api('/api/people');$('#content').innerHTML=`<div class="settings"><h2>People list</h2><p class="muted">Keep known names here to catch OCR spelling errors. Matching uses spelling and English phonetic similarity on this Mac. It cannot confirm who made a payment.</p><label>One person per line. Separate alternate spellings with a vertical bar.<textarea id="peopleText" placeholder="Ajay Sharma | Ajai Sharma\nMohammed Khan | Mohammad Khan">${esc(list.map(p=>[p.name,...p.aliases].join(' | ')).join('\n'))}</textarea></label><p><button class="primary" id="savePeople">Save people list</button> <button id="back">Back to statements</button></p><p class="muted">Example names are examples only. No contacts or internet search is accessed.</p></div>`;$('#savePeople').onclick=async()=>{try{let people=$('#peopleText').value.split('\n').map(l=>l.split('|').map(s=>s.trim()).filter(Boolean)).filter(l=>l.length).map(l=>({name:l[0],aliases:l.slice(1)}));await api('/api/people',people);toast('People list saved locally')}catch(e){error(e)}};$('#back').onclick=()=>{peopleMode=false;selected?openDoc(selected):empty()}}
-$('#peopleButton').onclick=()=>people().catch(error);$('#importButton').onclick=()=>$('#file').click();$('#file').onchange=async e=>{for(const f of e.target.files){try{let response=await fetch('/api/upload',{method:'POST',headers:{'X-Filename':f.name.replace(/[^\x20-\x7E]/g,'_'),'Content-Type':'application/pdf'},body:f});let data=await response.json();if(!response.ok)throw new Error(data.error);await openDoc(data.id)}catch(e){error(e)}}$('#file').value=''};
+function paintResources(data){
+    resourceSnapshot=data;
+    const s=data.settings,e=data.effective;
+    health.resources={...(health.resources||{}),document_workers:e.document_workers,ai_instances:s.ai_instances};
+    if($('#resourceLive'))$('#resourceLive').textContent=`${data.memory_used_gb==null?'Memory reading unavailable':`${data.memory_used_gb.toFixed(2)} GB estimated processing memory`} · ${data.running_pages} active processing slots · ${data.ai_workers.live} AI instance${data.ai_workers.live===1?'':'s'} loaded. ${e.memory_blocked?'Waiting for memory to fall below the budget.':`Up to ${Math.min(e.document_workers,data.admission_limit)} documents admitted now.`} ${data.ai_workers.live>(data.gpu_reporters??0)?'AI GPU readings are still warming up.':''}`;
+    if($('#resourceEffective'))$('#resourceEffective').textContent=`Effective limits: ${e.document_workers} documents, ${e.ocr_jobs} searchable-PDF worker${e.ocr_jobs===1?'':'s'} per document, ${s.ai_instances} AI instance${s.ai_instances===1?'':'s'}. Memory and system pressure can reduce concurrency below your selection.`;
+    $('#engineStatus').textContent=`${s.memory_gb} GB memory budget · up to ${e.document_workers} documents · ${s.cpu_threads} OCR CPU parallelism · up to ${s.ai_instances} AI instance${s.ai_instances===1?'':'s'}. Best-effort limits.`;
+}
+async function pollResources(){
+    if(resourcePolling)return;resourcePolling=true;
+    try{paintResources(await api('/api/resources'))}catch(e){if(resourceMode&&$('#resourceLive'))$('#resourceLive').textContent='Live resource readings are unavailable. Saved settings are unchanged.'}finally{resourcePolling=false}
+}
+async function resourceSettings(){
+    try{
+        const data=await api('/api/resources');peopleMode=true;resourceMode=true;renderDocs();$('#alert').innerHTML='';
+        const options=(maximum,unit,start=1)=>Array.from({length:maximum-start+1},(_,i)=>`<option value="${i+start}">${i+start}${unit}</option>`).join('');
+        $('#content').innerHTML=`<div class="settings resource-settings"><div class="titlebar"><h2>Resource settings</h2><span class="grow"></span><button id="backResources">Back to statements</button></div><p class="muted">Choose how much of this Mac to use. Settings are saved locally and apply during the current batch. Your Mac has ${data.hardware.memory_gb} GB memory and ${data.hardware.cpu_cores} CPU cores.</p><form id="resourceForm"><label>Preset<select id="resourcePreset"><option value="light">Light — leave room for other apps</option><option value="balanced">Balanced — recommended</option><option value="maximum">Maximum — use more of this Mac</option><option value="custom">Custom</option></select></label><div class="formgrid resource-controls"><label for="resourceMemory">Memory budget<select id="resourceMemory">${options(data.bounds.memory_gb,' GB',4)}</select></label><label for="resourceDocuments">Simultaneous documents<select id="resourceDocuments">${options(data.bounds.documents,'')}</select></label><label for="resourceCPU">OCR CPU parallelism<select id="resourceCPU">${options(data.bounds.cpu_threads,'')}</select></label><label for="resourceAI">AI instances<select id="resourceAI"><option value="1">1 — lower memory use</option><option value="2">2 — needs at least 10 GB budget</option></select></label></div><p class="muted">The memory budget is best-effort, not a strict macOS RAM cap. The engine waits before new pages or AI work and unloads idle model copies when near the budget. An active operation can exceed it temporarily.</p><p class="muted">CPU parallelism controls OCR workers and document admission, not CPU percentage or GPU use. Existing operations finish before lower limits take full effect. Two AI instances share the GPU and may not be twice as fast.</p><button class="primary" type="submit" id="saveResources">Apply resource settings</button><p id="resourcesFeedback" role="status" aria-live="polite"></p></form><hr class="sectionline"><h3>Current use</h3><p id="resourceLive" role="status" aria-live="polite"></p><p id="resourceEffective" class="muted"></p><p class="muted">${esc(data.memory_scope)} System-memory safeguards stay enabled.</p></div>`;
+        const fill=s=>{ $('#resourcePreset').value=s.preset;$('#resourceMemory').value=s.memory_gb;$('#resourceDocuments').value=s.documents;$('#resourceCPU').value=s.cpu_threads;$('#resourceAI').value=s.ai_instances; };
+        fill(data.settings);paintResources(data);
+        $('#resourcePreset').onchange=()=>{const preset=$('#resourcePreset').value;if(preset!=='custom')fill(data.presets[preset])};
+        for(const id of ['resourceMemory','resourceDocuments','resourceCPU','resourceAI'])$('#'+id).onchange=()=>{$('#resourcePreset').value='custom';$('#resourcesFeedback').textContent='Changes not applied.'};
+        $('#resourceForm').onsubmit=async event=>{
+            event.preventDefault();const button=$('#saveResources');button.disabled=true;
+            try{
+                const value={preset:$('#resourcePreset').value,memory_gb:Number($('#resourceMemory').value),documents:Number($('#resourceDocuments').value),cpu_threads:Number($('#resourceCPU').value),ai_instances:Number($('#resourceAI').value)};
+                const updated=await api('/api/resources',value);if(!resourceMode)return;fill(updated.settings);paintResources(updated);$('#resourcesFeedback').textContent='Saved. Active operations finish safely; new work uses these limits.';toast('Resource settings applied');
+            }catch(e){if($('#resourcesFeedback'))$('#resourcesFeedback').textContent=e.message}finally{if(button.isConnected)button.disabled=false}
+        };
+        $('#backResources').onclick=()=>{resourceMode=false;peopleMode=false;selected?openDoc(selected):empty()};
+    }catch(e){error(e)}
+}
+$('#resourceButton').onclick=resourceSettings;$('#sidebarResources').onclick=resourceSettings;
+$('#peopleButton').onclick=()=>{resourceMode=false;people().catch(error)};$('#importButton').onclick=()=>$('#file').click();$('#file').onchange=async e=>{for(const f of e.target.files){try{let response=await fetch('/api/upload',{method:'POST',headers:{'X-Filename':f.name.replace(/[^\x20-\x7E]/g,'_'),'Content-Type':'application/pdf'},body:f});let data=await response.json();if(!response.ok)throw new Error(data.error);await openDoc(data.id)}catch(e){error(e)}}$('#file').value=''};
 async function start(){
     try{
         health=await api('/api/health');
@@ -109,6 +142,7 @@ async function start(){
         $('#engineStatus').textContent=`Local processing${resources.document_workers?` · up to ${resources.document_workers} statements at once`:''}${resources.cpu_cores?` · ${resources.cpu_cores} CPU cores`:''}${resources.memory_gb?` · ${resources.memory_gb} GB memory`:''}. ${aiLabel}.`;
         if(!health.ready)error('OCR tools are missing. Quit the app, run Setup.command, and reopen it.');
         await refresh();if(docs.length)await openDoc(docs[0].id);else empty();
+        pollResources();setInterval(pollResources,3000);
     }catch(e){error(e)}
 }
 start();setInterval(refresh,2500);

@@ -72,6 +72,17 @@ def main():
     try:
         try:request('/api/documents',auth=False);raise AssertionError('Unauthenticated API allowed')
         except urllib.error.HTTPError as e:assert e.code==403
+        resources=json.load(request('/api/resources'))
+        assert resources['memory_limit_kind']=='best_effort'
+        changed=json.load(request('/api/resources',{'preset':'light'}))
+        assert changed['settings']['documents']==1
+        assert json.load(request('/api/resources'))['settings']==changed['settings']
+        try:request('/api/resources',{'preset':'custom','documents':0});raise AssertionError('Invalid resource settings allowed')
+        except urllib.error.HTTPError as e:assert e.code==400
+        assert json.load(request('/api/resources'))['settings']==changed['settings']
+        hostile=urllib.request.Request(base+'/api/resources',data=b'{"preset":"maximum"}',headers={'X-Statement-Token':app.TOKEN,'Origin':'https://example.invalid'})
+        try:urllib.request.urlopen(hostile);raise AssertionError('Cross-origin resource update allowed')
+        except urllib.error.HTTPError as e:assert e.code==403
         assert len(json.load(request('/api/rows/'+doc)))==6
         request('/api/people',[{'name':'Ajay Sharma','aliases':['Ajai Sharma']}])
         assert json.load(request('/api/rows/'+doc))[0]['people_suggestions'][0]['name']=='Ajay Sharma'
@@ -85,7 +96,7 @@ def main():
         audit=json.load(request('/export/'+doc+'/audit'));assert len(audit)>=2
         request('/api/row/'+rows[0]['id'],{'state':'deleted'})
         assert len(request('/export/'+doc+'/csv').read().decode('utf-8-sig').splitlines())==6
-        print('PASS: real OCR, searchable PDF, source hashes, crops, local name suggestions, edits, reconciliation, audit, CSV/XLSX and authentication',flush=True)
+        print('PASS: real OCR, searchable PDF, source hashes, crops, names, edits, reconciliation, audit, CSV/XLSX, persistent resource settings and authentication',flush=True)
     finally:server.shutdown()
 
 

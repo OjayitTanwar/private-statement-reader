@@ -30,7 +30,7 @@ draw.line([(613,710),(665,758),(770,649)],fill='#174d3b',width=32,joint='curve')
 for size in (16,32,128,256,512):
     for scale in (1,2):icon.resize((size*scale,size*scale),Image.Resampling.LANCZOS).save(icons/f'icon_{size}x{size}{"@2x" if scale==2 else ""}.png')
 subprocess.run(['iconutil','--convert','icns',str(icons),'-o',str(RES/'StatementReader.icns')],check=True)
-for name in ('app.py','bank_engine.py','people.py','table_grid.py','local_ai.py','ai_runner.py','ai_formats.py','automation.py','review_checks.py','source_repair.py','manual_overrides.py'):
+for name in ('app.py','bank_engine.py','people.py','table_grid.py','local_ai.py','ai_runner.py','ai_formats.py','automation.py','review_checks.py','source_repair.py','manual_overrides.py','resource_control.py','ai_memory.py'):
     shutil.copy2(ROOT/name,RES/'server'/name)
 for p in (ROOT/'static').iterdir():
     if p.is_file(): shutil.copy2(p,RES/'server/static'/p.name)
@@ -71,7 +71,7 @@ for source,dest,frameworks in [('VisionOCR.swift',RES/'VisionOCR',['Vision','Ima
                     str(ROOT/'native'/source),'-o',str(dest),*[arg for f in frameworks for arg in ('-framework',f)]],check=True,env=env)
 plist={'CFBundleName':'Private Statement Reader','CFBundleDisplayName':'Private Statement Reader',
        'CFBundleIdentifier':'local.private.statementreader','CFBundleExecutable':'StatementReader',
-       'CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.6.0','CFBundleVersion':'7',
+       'CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.7.0','CFBundleVersion':'8',
        'LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'CFBundleIconFile':'StatementReader',
        'NSAppTransportSecurity':{'NSAllowsLocalNetworking':True},
        'NSHumanReadableCopyright':'Local bank statement OCR. Open-source processing; Apple Vision on macOS.'}

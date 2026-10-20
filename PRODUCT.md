@@ -18,7 +18,7 @@ Import PDFs together and automatically produce searchable PDFs, extracted transa
 
 ## Operating Context
 
-Private local desktop use. Four document jobs may overlap on the current 10-core, 16 GB Mac. Up to two local GLM-OCR 8-bit model processes handle visual readings; memory pressure reduces concurrency. Original documents and audit history remain local.
+Private local desktop use on the current 10-core, 16 GB Mac. The user chooses a best-effort memory budget, 1–8 simultaneous documents (hardware permitting), OCR CPU parallelism and up to two local GLM-OCR 8-bit model processes. Balanced settings are the default. Live changes apply at safe operation boundaries; memory pressure reduces concurrency. Original documents and audit history remain local.
 
 ## Capabilities and Constraints
 

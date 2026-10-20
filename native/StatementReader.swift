@@ -7,6 +7,7 @@ extension NSToolbarItem.Identifier {
     static let readerImport = NSToolbarItem.Identifier("reader.import")
     static let readerFinished = NSToolbarItem.Identifier("reader.finished")
     static let readerPeople = NSToolbarItem.Identifier("reader.people")
+    static let readerResources = NSToolbarItem.Identifier("reader.resources")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
@@ -87,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         let menu=NSMenu(); let appItem=NSMenuItem(); menu.addItem(appItem)
         let appMenu=NSMenu(); appItem.submenu=appMenu
         appMenu.addItem(withTitle: "About Private Statement Reader", action: #selector(about), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Resource Settings…", action: #selector(showResources), keyEquivalent: ",")
         appMenu.addItem(withTitle: "Show Local Data", action: #selector(showData), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Private Statement Reader", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -133,17 +135,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar:NSToolbar)->[NSToolbarItem.Identifier] {
-        [.readerSidebar,.flexibleSpace,.space,.readerImport,.readerFinished,.readerPeople]
+        [.readerSidebar,.flexibleSpace,.space,.readerImport,.readerFinished,.readerPeople,.readerResources]
     }
     func toolbarDefaultItemIdentifiers(_ toolbar:NSToolbar)->[NSToolbarItem.Identifier] {
-        [.readerSidebar,.flexibleSpace,.readerImport,.readerFinished,.readerPeople]
+        [.readerSidebar,.flexibleSpace,.readerImport,.readerFinished,.readerPeople,.readerResources]
     }
     func toolbar(_ toolbar:NSToolbar,itemForItemIdentifier identifier:NSToolbarItem.Identifier,willBeInsertedIntoToolbar flag:Bool)->NSToolbarItem? {
         let options:[NSToolbarItem.Identifier:(String,String,Selector)] = [
             .readerSidebar:("Toggle Sidebar","sidebar.left",#selector(toggleSidebar)),
             .readerImport:("Import PDFs","doc.badge.plus",#selector(importPDFs)),
             .readerFinished:("Finished Files","folder",#selector(showFinishedFiles)),
-            .readerPeople:("People","person.2",#selector(showPeople))]
+            .readerPeople:("People","person.2",#selector(showPeople)),
+            .readerResources:("Resource Settings","slider.horizontal.3",#selector(showResources))]
         guard let (label,symbol,action)=options[identifier] else { return nil }
         let item=NSToolbarItem(itemIdentifier:identifier)
         item.label=label; item.paletteLabel=label; item.toolTip=label
@@ -153,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     }
     func validateUserInterfaceItem(_ item:NSValidatedUserInterfaceItem)->Bool {
         if item.action == #selector(importPDFs) { return sessionURL != nil && !importing }
-        if [#selector(toggleSidebar),#selector(showPeople),#selector(focusSearch),#selector(reloadView)].contains(item.action) { return sessionURL != nil }
+        if [#selector(toggleSidebar),#selector(showPeople),#selector(showResources),#selector(focusSearch),#selector(reloadView)].contains(item.action) { return sessionURL != nil }
         return true
     }
     func updateToolbar() {
@@ -166,7 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         }
     }
     @objc func toggleSidebar() { web.evaluateJavaScript("document.documentElement.classList.toggle('sidebar-hidden')",completionHandler:nil) }
-    @objc func showPeople() { web.evaluateJavaScript("if (typeof people === 'function') { people(); }",completionHandler:nil) }
+    @objc func showPeople() { web.evaluateJavaScript("if (typeof people === 'function') { resourceMode=false; people(); }",completionHandler:nil) }
+    @objc func showResources() { web.evaluateJavaScript("if (typeof resourceSettings === 'function') { resourceSettings(); }",completionHandler:nil) }
     @objc func focusSearch() {
         web.evaluateJavaScript("(() => { const input=document.querySelector('#search'); if (input) { input.focus(); input.select(); } })()",completionHandler:nil)
         window.makeFirstResponder(web)
@@ -228,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     }
 
     @objc func about() {
-        let a=NSAlert(); a.messageText="Statement Reader"; a.informativeText="Automatic bank statement extraction and reconciliation.\nSpreadsheets save automatically; interrupted work resumes on launch.\nVersion 0.6.0 — estimated readings are labeled."; a.runModal()
+        let a=NSAlert(); a.messageText="Statement Reader"; a.informativeText="Automatic bank statement extraction and reconciliation.\nSpreadsheets save automatically; interrupted work resumes on launch.\nVersion 0.7.0 — resource budgets and estimated readings are labeled."; a.runModal()
     }
     @objc func showData() { NSWorkspace.shared.open(dataURL) }
     @objc func showFinishedFiles() {

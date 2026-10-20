@@ -32,7 +32,7 @@ No subscription. No API key. No cloud OCR service.
 - **Automatic balance checks.** Find missing values, conflicting readings and balance differences.
 - **Local AI support.** Use GLM-OCR through MLX for additional readings and labeled estimates.
 - **Automatic exports.** Save each statement and a combined CSV/XLSX file without row approvals.
-- **Batch processing.** Process up to four documents and two AI requests at once, subject to available resources.
+- **Resource controls.** Set a local memory budget, 1–8 simultaneous documents, OCR CPU parallelism and 1–2 AI instances. Hardware and memory pressure can reduce concurrency. RAM limits are best-effort, not OS-enforced quotas.
 - **Mac controls.** Use a native AppKit toolbar, menus and file panels, with a Mac-styled document workspace.
 
 The app supports light and dark appearance. It resumes from completed pages after a restart.

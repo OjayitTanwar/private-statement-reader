@@ -21,3 +21,4 @@ jobs:
       - run: node --check static/ui.js
       - run: node tests/test_evidence.cjs
       - run: node tests/test_triage_ui.cjs
+      - run: node tests/test_resource_ui.cjs

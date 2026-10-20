@@ -278,6 +278,9 @@ details p { max-width: 85ch; }
 .settings { max-width: 850px; }
 .settings h2 { font-size: 17px; font-weight: 600; }
 .settings textarea { min-height: 250px; }
+.resource-controls { margin-top: 16px; }
+.resource-settings h3 { font-size: 14px; font-weight: 600; }
+.resource-settings p { max-width: 75ch; line-height: 1.55; }
 .calibration { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
 #toast { position: fixed; bottom: 20px; left: 50%; z-index: 10; display: none; max-width: 85vw; padding: 9px 14px; transform: translateX(-50%); border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); box-shadow: 0 4px 16px #0002; font-size: 12px; }
 

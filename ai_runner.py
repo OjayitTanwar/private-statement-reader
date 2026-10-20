@@ -7,6 +7,8 @@ output=sys.stdout
 loaded=time.monotonic()
 with contextlib.redirect_stdout(sys.stderr):
     import mlx.core as mx
+    from ai_memory import start_memory_reporter
+    start_memory_reporter(mx)
     from mlx_vlm import load,generate
     from mlx_vlm.prompt_utils import apply_chat_template
     model_path=sys.argv[1]

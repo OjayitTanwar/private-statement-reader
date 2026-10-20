@@ -8,6 +8,17 @@ from bank_engine import cents,normal_date,normalize,header_groups,parse_amount
 
 _workers={}
 _workers_lock=threading.Lock()
+_resource_ai_limit=None
+
+
+def configure_ai_limits(provider):
+    """Provider returns 0 to wait/reclaim, 1 or 2; never kills an active read."""
+    global _resource_ai_limit
+    _resource_ai_limit=provider
+    with _workers_lock:entries=list(_workers.values())
+    for entry in entries:
+        if isinstance(entry,_WorkerPool):
+            with entry.condition:entry.condition.notify_all()
 
 
 class _SharedWorker:
@@ -39,7 +50,7 @@ class _SharedWorker:
     def _start(self,folder):
         python,model,packages=self.key
         env={**os.environ,'HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1','HF_HUB_DISABLE_TELEMETRY':'1','DO_NOT_TRACK':'1'}
-        env.update({'OMP_NUM_THREADS':'2','OPENBLAS_NUM_THREADS':'2','VECLIB_MAXIMUM_THREADS':'2','TOKENIZERS_PARALLELISM':'false'})
+        env.update({'OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','VECLIB_MAXIMUM_THREADS':'1','TOKENIZERS_PARALLELISM':'false'})
         env.pop('PYTHONPATH',None)
         if packages:env['PYTHONPATH']=packages
         self.log=(folder/'local-ai.log').open('a')
@@ -96,8 +107,9 @@ class _WorkerPool:
                     self.condition.notify_all()
 
     def _retire_idle_extra(self,pressure):
-        if pressure<2:return
-        for index,worker in enumerate(self.workers[1:],start=1):
+        limit=min(1 if pressure>=2 else len(self.workers),_resource_ai_limit() if _resource_ai_limit else len(self.workers))
+        for index,worker in enumerate(self.workers):
+            if index<limit:continue
             if not self.busy[index]:
                 with worker.lock:worker._stop()
 
@@ -107,7 +119,7 @@ class _WorkerPool:
             while True:
                 if self.closed:raise RuntimeError('Local AI pool is shutting down')
                 pressure=_memory_pressure();self._retire_idle_extra(pressure)
-                limit=1 if pressure>=2 else len(self.workers)
+                limit=min(1 if pressure>=2 else len(self.workers),_resource_ai_limit() if _resource_ai_limit else len(self.workers))
                 index=next((i for i in range(limit) if not self.busy[i]),None)
                 if index is not None:
                     self.busy[index]=True;break
@@ -164,7 +176,7 @@ class LocalAI:
         python=os.environ.get('STATEMENT_AI_PYTHON');model=os.environ.get('STATEMENT_AI_MODEL')
         if not python or not model or not Path(model,'config.json').is_file():return
         key=(python,str(Path(model).resolve()),os.environ.get('STATEMENT_AI_PACKAGES',''))
-        try:instances=max(1,min(2,int(os.environ.get('STATEMENT_AI_INSTANCES','1'))))
+        try:instances=2 if _resource_ai_limit else max(1,min(2,int(os.environ.get('STATEMENT_AI_INSTANCES','1'))))
         except ValueError:instances=1
         with _workers_lock:
             registry_key=(*key,instances)

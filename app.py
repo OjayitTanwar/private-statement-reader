@@ -10,7 +10,8 @@ from urllib.parse import parse_qs, quote, urlparse
 from bank_engine import extract_page, group_lines, is_statement, normalize, ocr, pass_score, reconcile, parse_amount, cents, select_observed_candidates, match_ocr_rows
 from people import suggestions,automatic_counterparties,repair_counterparty_guesses
 from table_grid import extract_grid,recover_reversed_headers,decode_balance_chain
-from local_ai import LocalAI,combine_ai,infer_missing_amounts,infer_two_sided_balances,ai_worker_stats
+from local_ai import LocalAI,combine_ai,infer_missing_amounts,infer_two_sided_balances,ai_worker_stats,configure_ai_limits
+from resource_control import ResourceBudget
 from automation import atomic_json,empty_summary,prepared_rows,export_bytes,write_document_outputs,atomic_bytes,FIELDS
 
 ROOT=Path(__file__).resolve().parent
@@ -39,6 +40,8 @@ def resource_plan():
 
 
 RESOURCES=resource_plan()
+RESOURCE_BUDGET=ResourceBudget(RESOURCES)
+CUSTOM_RESOURCES=False
 os.environ.setdefault('STATEMENT_AI_INSTANCES',str(RESOURCES['ai_instances']))
 
 
@@ -46,7 +49,39 @@ def capacity_limit():
     try:
         pressure=int(subprocess.check_output(['sysctl','-n','kern.memorystatus_vm_pressure_level'],text=True,stderr=subprocess.DEVNULL,timeout=2))
     except (OSError,ValueError,subprocess.SubprocessError):pressure=1
-    return min(RESOURCES['document_workers'],1 if pressure>=4 else 2 if pressure>=2 else 4)
+    configured=RESOURCE_BUDGET.limits()['document_workers'] if CUSTOM_RESOURCES else RESOURCES['document_workers']
+    return min(configured,1 if pressure>=4 else 2 if pressure>=2 else configured)
+
+
+def resource_settings(value=None):
+    global CUSTOM_RESOURCES
+    if value is not None:
+        validated=RESOURCE_BUDGET.validate(value)
+        with connection() as c:c.execute("INSERT OR REPLACE INTO settings VALUES('resources',?)",(json.dumps(validated),))
+        RESOURCE_BUDGET.configure(validated);CUSTOM_RESOURCES=True
+        with CAPACITY_CHANGED:CAPACITY_CHANGED.notify_all()
+    snapshot=RESOURCE_BUDGET.snapshot()
+    snapshot.update(admission_limit=capacity_limit(),active_documents=len(ACTIVE_JOBS),ai_workers=ai_worker_stats())
+    return snapshot
+
+
+def load_resource_settings():
+    global CUSTOM_RESOURCES
+    with connection() as c:saved=c.execute("SELECT value FROM settings WHERE key='resources'").fetchone()
+    if saved:
+        try:RESOURCE_BUDGET.configure(json.loads(saved[0]))
+        except (ValueError,TypeError):pass
+    CUSTOM_RESOURCES=True
+    metrics=DATA/'runtime';metrics.mkdir(exist_ok=True,mode=0o700)
+    os.environ['STATEMENT_RESOURCE_METRICS']=str(metrics)
+    RESOURCE_BUDGET.metrics_directory=metrics
+    configure_ai_limits(RESOURCE_BUDGET.ai_limit)
+    RESOURCE_BUDGET.start_monitor()
+
+
+def resource_page(doc):
+    if CUSTOM_RESOURCES:
+        RESOURCE_BUDGET.enter_page(doc,lambda:status(doc,stage='Waiting for resource budget; saved progress retained'))
 
 
 def acquire_slot(doc):
@@ -255,7 +290,8 @@ def restore_completed_outputs():
 
 
 def run(cmd,timeout=300):
-    env={**os.environ,'OMP_THREAD_LIMIT':'2'}
+    threads=1 if CUSTOM_RESOURCES else 2
+    env={**os.environ,'OMP_THREAD_LIMIT':str(threads),'OMP_NUM_THREADS':str(threads)}
     if os.environ.get('STATEMENT_TESSDATA'):
         env['TESSDATA_PREFIX']=os.environ['STATEMENT_TESSDATA']
     return subprocess.run([str(x) for x in cmd],capture_output=True,text=True,check=True,timeout=timeout,env=env)
@@ -269,7 +305,7 @@ def dependencies():
             'ai':bool(os.environ.get('STATEMENT_AI_MODEL') and Path(os.environ['STATEMENT_AI_MODEL'],'config.json').is_file()),
             'ai_model':'GLM-OCR 8-bit · MLX',
             'ai_workers':ai_worker_stats(),
-            'resources':{**RESOURCES,'admission_limit':capacity_limit()},'active_documents':len(ACTIVE_JOBS),'queued_documents':JOBS.qsize()}
+            'resources':{**RESOURCES,**({'document_workers':RESOURCE_BUDGET.limits()['document_workers'],'ai_instances':RESOURCE_BUDGET.limits()['ai_instances']} if CUSTOM_RESOURCES else {}),'admission_limit':capacity_limit()},'active_documents':len(ACTIVE_JOBS),'queued_documents':JOBS.qsize()}
 
 
 def source_signature(folder):
@@ -302,6 +338,7 @@ def process(doc):
     status(doc,status='processing',stage='Resuming saved pages' if resumed else 'Inspecting PDF',error='',report=report,progress=resumed['next_page']-1 if resumed else 0)
     ai=None
     try:
+        resource_page(doc)
         if not dependencies()['ready']: raise ValueError('Missing OCR tools. Run the included setup command, then Retry.')
         info=run(['pdfinfo',source]).stdout
         match=re.search(r'^Pages:\s+(\d+)',info,re.M)
@@ -317,7 +354,8 @@ def process(doc):
             except (ValueError,subprocess.SubprocessError):searchable.unlink()
         if not searchable.exists():
             try:
-                run(['ocrmypdf','--skip-text','--rotate-pages','--deskew','--jobs',str(RESOURCES['ocr_jobs']),'--optimize','0',
+                jobs=RESOURCE_BUDGET.limits()['ocr_jobs'] if CUSTOM_RESOURCES else RESOURCES['ocr_jobs']
+                run(['ocrmypdf','--skip-text','--rotate-pages','--deskew','--jobs',str(jobs),'--optimize','0',
                      '--output-type','pdf','--tesseract-timeout','300',source,searchable],timeout=max(600,total*360))
                 report['searchable']=True
             except (subprocess.CalledProcessError,subprocess.TimeoutExpired) as e:
@@ -340,6 +378,7 @@ def process(doc):
         bank_evidence=resumed.get('bank_evidence','') if resumed else ''
         recognized=resumed.get('recognized',False) if resumed else False
         for page in range(resumed['next_page'] if resumed else 1,total+1):
+            resource_page(doc)
             status(doc,stage=f'Reading page {page} of {total} with independent OCR passes',progress=page-1,report=report)
             prefix=folder/'working-page'
             run(['pdftoppm','-f',page,'-l',page,'-singlefile','-scale-to','4500','-png',render,prefix])
@@ -499,6 +538,7 @@ def process(doc):
         status(doc,status='error',stage='Processing stopped',error=str(e)[:400],report=report)
     finally:
         if ai:ai.close()
+        RESOURCE_BUDGET.leave_page(doc)
 
 
 def run_job(doc):
@@ -573,6 +613,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/ui.js','/evidence.js','/style.css'):
             return self.send(200,(ROOT/'static'/path[1:]).read_bytes(),'text/javascript' if path.endswith('.js') else 'text/css')
         if path=='/api/health': return self.json(dependencies())
+        if path=='/api/resources': return self.json(resource_settings())
         if path=='/api/people': return self.json(people_list())
         if path=='/api/documents':
             with connection() as c: docs=[dict(r) for r in c.execute("SELECT * FROM bank_documents WHERE status<>'duplicate' ORDER BY created DESC")]
@@ -611,6 +652,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception: self.json({'error':'Could not save changes. Your source PDF is retained.'},500)
     def post(self):
         path=urlparse(self.path).path
+        if path=='/api/resources':return self.json(resource_settings(self.body()))
         if path=='/api/upload':
             size=int(self.headers.get('Content-Length','0'))
             if not 5<=size<=1024**3: raise ValueError('Choose a PDF smaller than 1 GB.')
@@ -722,8 +764,10 @@ if __name__=='__main__':
         try: os.setsid()
         except OSError: pass
     init_db()
+    load_resource_settings()
+    os.environ.update({'OMP_THREAD_LIMIT':'1','OMP_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','VECLIB_MAXIMUM_THREADS':'1'})
     threading.Thread(target=restore_completed_outputs,daemon=True).start()
-    for index in range(RESOURCES['document_workers']):threading.Thread(target=worker,daemon=True,name=f'document-{index+1}').start()
+    for index in range(RESOURCE_BUDGET.max_documents):threading.Thread(target=worker,daemon=True,name=f'document-{index+1}').start()
     server=ThreadingHTTPServer(('127.0.0.1',int(os.environ.get('STATEMENT_PORT','0'))),Handler)
     url=f'http://127.0.0.1:{server.server_port}/?token={TOKEN}'
     if os.environ.get('STATEMENT_READY'):
